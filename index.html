@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>가위바위보 시뮬레이터</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="layout-root">
+      <div class="layout-left">
+        <header id="control-bar" class="layout-header" data-weight="15">
+          <div class="control-slot" data-slot="input">
+            <label for="participants-input" class="field-label">참가자 이름 (쉼표로 구분)</label>
+            <div class="input-wrapper">
+              <input
+                type="text"
+                id="participants-input"
+                name="participants"
+                placeholder="예) 철수, 영희, 민수"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+          <div class="control-slot" data-slot="actions">
+            <button type="button" id="start-winner" class="action-button" disabled>승자 뽑기</button>
+            <button type="button" id="start-loser" class="action-button" disabled>패자 뽑기</button>
+          </div>
+        </header>
+
+        <main id="simulation-area" class="layout-main" data-weight="55">
+          <section class="arena" aria-labelledby="arena-heading">
+            <div class="arena-circle">
+              <h1 id="arena-heading" class="visually-hidden">게임 진행 패널</h1>
+              <div id="countdown-indicator" aria-live="polite" role="status">0</div>
+              <div id="participant-ring" aria-live="polite"></div>
+              <div id="choice-ring" aria-live="polite"></div>
+            </div>
+          </section>
+          <section class="waiting-panel" aria-labelledby="waiting-heading">
+            <h2 id="waiting-heading" class="visually-hidden">대기자</h2>
+            <div class="panel-content" data-panel="waiting">
+              <p class="placeholder">대기자가 없습니다.</p>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <div class="layout-right">
+        <section class="history-panel" aria-labelledby="history-heading">
+          <h2 id="history-heading" class="panel-title">히스토리</h2>
+          <div class="panel-content" data-panel="history">
+            <p class="placeholder">라운드 기록이 없습니다.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div id="final-popup" class="final-popup" role="dialog" aria-modal="true" aria-labelledby="final-popup-title" hidden>
+      <div class="final-popup__card">
+        <h2 id="final-popup-title">게임 결과</h2>
+        <p class="final-popup__mode"></p>
+        <p class="final-popup__name"></p>
+        <button type="button" id="final-popup-close" class="action-button">닫기</button>
+      </div>
+    </div>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
