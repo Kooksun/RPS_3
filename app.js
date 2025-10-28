@@ -685,6 +685,299 @@ const DwellController = (() => {
   };
 })();
 
+const ReducedMotion = (() => {
+  const QUERY = '(prefers-reduced-motion: reduce)';
+  let mediaQuery;
+  let isReduced = false;
+
+  const handleChange = (event) => {
+    isReduced = Boolean(event.matches);
+  };
+
+  const detect = () => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      isReduced = false;
+      return;
+    }
+    mediaQuery = window.matchMedia(QUERY);
+    isReduced = Boolean(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange);
+    } else if (typeof mediaQuery.addListener === 'function') {
+      mediaQuery.addListener(handleChange);
+    }
+  };
+
+  detect();
+
+  return {
+    isEnabled() {
+      return isReduced;
+    },
+    teardown() {
+      if (!mediaQuery) return;
+      if (typeof mediaQuery.removeEventListener === 'function') {
+        mediaQuery.removeEventListener('change', handleChange);
+      } else if (typeof mediaQuery.removeListener === 'function') {
+        mediaQuery.removeListener(handleChange);
+      }
+    },
+  };
+})();
+
+const EliminationSequenceController = (() => {
+  const DEFAULT_DURATION = 600;
+  const MIN_DURATION = 400;
+  const MAX_DURATION = 1000;
+
+  let pendingSequence = null;
+
+  const clampDuration = (value) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) return DEFAULT_DURATION;
+    return Math.min(MAX_DURATION, Math.max(MIN_DURATION, value));
+  };
+
+  const resolveMode = (contextMode) => contextMode ?? GameState.serialize().mode ?? 'winner';
+
+  const resolveEliminatedIds = (round, mode) => {
+    if (!round) return [];
+    if (mode === 'winner') return Array.isArray(round.losers) ? [...round.losers] : [];
+    return Array.isArray(round.winners) ? [...round.winners] : [];
+  };
+
+  const escapeToken = (token) => {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      return CSS.escape(token);
+    }
+    return token.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  };
+
+  const resolveTargets = (ids = []) => {
+    if (!state.dom.participantRing) return [];
+    return ids
+      .map((id) =>
+        state.dom.participantRing.querySelector(
+          `[data-participant-id="${escapeToken(id)}"]`
+        )
+      )
+      .filter(Boolean);
+  };
+
+  const resolveParticipantNames = (ids = []) => {
+    const snapshot = GameState.serialize();
+    const pool = [...snapshot.activeParticipants, ...snapshot.waitingParticipants];
+    const nameMap = new Map(pool.map((participant) => [participant.id, participant.name]));
+    return ids.map((id) => nameMap.get(id) ?? id);
+  };
+
+  const settleTarget = (target) => {
+    if (!target) return;
+    target.classList.remove('is-eliminating');
+    target.classList.remove('is-eliminating--loser');
+    target.classList.remove('is-eliminating--winner');
+    target.style.removeProperty('--elimination-duration');
+  };
+
+  const settleSequenceTargets = (sequence) => {
+    (sequence?.targets ?? []).forEach((target) => settleTarget(target));
+  };
+
+  const createAnimationPromise = (sequence, target) =>
+    new Promise((resolve) => {
+      if (!target) {
+        resolve();
+        return;
+      }
+
+      const entry = {
+        target,
+        fallbackId: null,
+        cleaned: false,
+        cleanup: () => {},
+      };
+
+      const removeEntry = () => {
+        sequence.animations = sequence.animations.filter((item) => item !== entry);
+      };
+
+      const cleanup = () => {
+        if (entry.cleaned) {
+          return;
+        }
+        entry.cleaned = true;
+        target.removeEventListener('animationend', handleAnimationEnd);
+        target.removeEventListener('transitionend', handleAnimationEnd);
+        if (entry.fallbackId != null) {
+          window.clearTimeout(entry.fallbackId);
+        }
+        removeEntry();
+        resolve();
+      };
+
+      const handleAnimationEnd = (event) => {
+        if (event.target !== target) return;
+        cleanup();
+      };
+
+      const triumphantExit = sequence.mode === 'loser';
+      const runtime = Math.min(
+        triumphantExit ? sequence.durationMs + 180 : sequence.durationMs,
+        MAX_DURATION
+      );
+
+      entry.fallbackId = window.setTimeout(cleanup, runtime + 160);
+      target.addEventListener('animationend', handleAnimationEnd);
+      target.addEventListener('transitionend', handleAnimationEnd);
+      target.style.setProperty('--elimination-duration', `${runtime}ms`);
+
+      entry.cleanup = cleanup;
+      sequence.animations.push(entry);
+
+      window.requestAnimationFrame(() => {
+        target.classList.add('is-eliminating');
+        if (sequence.mode === 'winner') {
+          target.classList.add('is-eliminating--loser');
+        } else {
+          target.classList.add('is-eliminating--winner');
+        }
+      });
+    });
+
+  const runAnimations = (sequence) => {
+    if (!sequence.targets.length) {
+      return new Promise((resolve) => window.setTimeout(resolve, sequence.durationMs));
+    }
+    const promises = sequence.targets.map((target) =>
+      createAnimationPromise(sequence, target)
+    );
+    return Promise.all(promises);
+  };
+
+  const buildSequence = (context = {}) => {
+    const round = context.round ?? null;
+    const mode = resolveMode(context.mode);
+    const eliminatedIds = Array.isArray(context.eliminatedIds)
+      ? [...context.eliminatedIds]
+      : resolveEliminatedIds(round, mode);
+    const durationMs = clampDuration(context.durationMs ?? DEFAULT_DURATION);
+
+    pendingSequence = {
+      roundIndex: round?.index ?? context.roundIndex ?? GameState.serialize().countdown.currentRound,
+      mode,
+      eliminatedIds,
+      durationMs,
+      prefersReducedMotion: ReducedMotion.isEnabled(),
+      targets: resolveTargets(eliminatedIds),
+      animations: [],
+      timestamp: Date.now(),
+      status: 'pending',
+    };
+    return pendingSequence;
+  };
+
+  const emitWithStatus = (eventName, sequence) => {
+    PubSub.emit(eventName, {
+      roundIndex: sequence.roundIndex,
+      mode: sequence.mode,
+      eliminatedIds: [...sequence.eliminatedIds],
+      durationMs: sequence.durationMs,
+      prefersReducedMotion: sequence.prefersReducedMotion,
+    });
+  };
+
+  const finalize = (sequence, status) => {
+    settleSequenceTargets(sequence);
+    (sequence.animations ?? []).forEach((entry) => entry.cleanup?.());
+    const result = {
+      roundIndex: sequence.roundIndex,
+      mode: sequence.mode,
+      eliminatedIds: [...sequence.eliminatedIds],
+      durationMs: sequence.durationMs,
+      prefersReducedMotion: sequence.prefersReducedMotion,
+      status,
+    };
+    pendingSequence = null;
+    return result;
+  };
+
+  const execute = (context = {}) => {
+    const sequence = pendingSequence ?? buildSequence(context);
+
+    if (!sequence.eliminatedIds.length) {
+      log('탈락 애니메이션', '제외 대상이 없어 애니메이션을 생략합니다.');
+      emitWithStatus('round:elimination:skipped', sequence);
+      return Promise.resolve(finalize(sequence, 'skipped'));
+    }
+
+    const participantNames = resolveParticipantNames(sequence.eliminatedIds);
+
+    if (sequence.prefersReducedMotion) {
+      log(
+        '탈락 애니메이션',
+        `시스템 모션 최소화 설정으로 즉시 제거 (${participantNames.length}명): ${participantNames.join(', ')}`
+      );
+      emitWithStatus('round:elimination:skipped', sequence);
+      return Promise.resolve(finalize(sequence, 'skipped'));
+    }
+
+    if (!sequence.targets.length) {
+      log(
+        '탈락 애니메이션',
+        `DOM 대상이 없어 즉시 제거 (${participantNames.length}명): ${participantNames.join(', ')}`
+      );
+      emitWithStatus('round:elimination:skipped', sequence);
+      return Promise.resolve(finalize(sequence, 'skipped'));
+    }
+
+    emitWithStatus('round:elimination:start', sequence);
+    const roleLabel = sequence.mode === 'winner' ? '패배자' : '승자';
+    log(
+      '탈락 애니메이션',
+      `${roleLabel} ${participantNames.length}명 애니메이션 시작: ${participantNames.join(', ')}`
+    );
+
+    return runAnimations(sequence)
+      .catch((error) => {
+        log(
+          '탈락 애니메이션',
+          '애니메이션 실행 중 오류가 발생하여 즉시 완료 처리합니다.',
+          error
+        );
+      })
+      .then(() => {
+        emitWithStatus('round:elimination:complete', sequence);
+        log(
+          '탈락 애니메이션',
+          `${roleLabel} ${participantNames.length}명 애니메이션 완료: ${participantNames.join(', ')}`
+        );
+        return finalize(sequence, 'completed');
+      });
+  };
+
+  const reset = () => {
+    if (pendingSequence) {
+      (pendingSequence.animations ?? []).forEach((entry) => entry.cleanup?.());
+      settleSequenceTargets(pendingSequence);
+      pendingSequence.animations = [];
+    }
+    pendingSequence = null;
+  };
+
+  const cancel = () => {
+    reset();
+  };
+
+  const getPendingSequence = () => pendingSequence;
+
+  return {
+    buildSequence,
+    execute,
+    reset,
+    cancel,
+    getPendingSequence,
+  };
+})();
+
 const applyNextActiveParticipants = (nextActiveIds = [], mode) => {
   const prevActive = state.game.activeParticipants;
   const prevWaiting = state.game.waitingParticipants;
@@ -721,6 +1014,7 @@ PubSub.on('game:start', () => {
   HistoryRenderer.reset();
   WaitingPanelRenderer.reset();
   DwellController.clear();
+  EliminationSequenceController.cancel();
 });
 
 PubSub.on('round:complete', (payload) => {
@@ -887,6 +1181,7 @@ export {
   HistoryRenderer,
   WaitingPanelRenderer,
   DwellController,
+  EliminationSequenceController,
 };
 const SimulationEngine = (() => {
   const state = {
@@ -985,9 +1280,25 @@ PubSub.on('game:start', () => SimulationEngine.start());
 PubSub.on('countdown:complete', (payload) =>
   SimulationEngine.handleCountdownComplete(payload ?? {})
 );
-PubSub.on('round:dwell:complete', (payload) => {
-  if (payload) {
-    applyNextActiveParticipants(payload.nextActiveIds, payload.mode);
+PubSub.on('round:dwell:complete', async (payload) => {
+  const context = payload ?? {};
+  const mode = context.mode ?? GameState.serialize().mode ?? 'winner';
+
+  EliminationSequenceController.buildSequence({
+    round: context.round,
+    mode,
+    eliminatedIds: context.eliminatedIds,
+  });
+
+  await EliminationSequenceController.execute({
+    round: context.round,
+    mode,
+    eliminatedIds: context.eliminatedIds,
+  });
+
+  if (Array.isArray(context.nextActiveIds)) {
+    applyNextActiveParticipants(context.nextActiveIds, mode);
   }
+
   SimulationEngine.handleDwellComplete();
 });

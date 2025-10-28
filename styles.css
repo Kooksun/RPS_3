@@ -13,6 +13,10 @@
   --footer-height: 30vh;
   --transition-fast: 180ms ease-out;
   --transition-medium: 300ms ease-out;
+  --elimination-duration: 0.6s;
+  --elimination-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --elimination-scale-end: 0.35;
+  --elimination-blur: 2px;
 }
 
 *,
@@ -253,6 +257,8 @@ body {
   pointer-events: none;
   transition: transform var(--transition-fast), opacity var(--transition-fast);
   opacity: 0;
+  filter: none;
+  will-change: transform, opacity, filter;
 }
 
 .participant-name {
@@ -263,6 +269,154 @@ body {
 
 .participant-node.is-visible {
   opacity: 1;
+}
+
+.participant-node.is-eliminating {
+  pointer-events: none;
+  z-index: 6;
+  animation: elimination-disappear var(--elimination-duration) var(--elimination-ease)
+    forwards;
+}
+
+.participant-node.is-eliminating::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.participant-node.is-eliminating--loser {
+  filter: drop-shadow(0 0 14px rgba(248, 113, 113, 0.65));
+  animation-name: elimination-arc-down;
+}
+
+.participant-node.is-eliminating--loser::after {
+  background: linear-gradient(
+    to bottom,
+    rgba(248, 113, 113, 0.45),
+    rgba(248, 113, 113, 0)
+  );
+  animation: loser-trail var(--elimination-duration) linear forwards;
+}
+
+.participant-node.is-eliminating--winner {
+  filter: drop-shadow(0 0 18px rgba(250, 204, 21, 0.75));
+  animation-name: elimination-arc-up;
+}
+
+.participant-node.is-eliminating--winner::after {
+  background: radial-gradient(circle at center, rgba(250, 204, 21, 0.6), transparent);
+  animation: winner-glint calc(var(--elimination-duration) * 0.9) ease-out forwards;
+}
+
+@keyframes elimination-disappear {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      scale(1);
+  }
+  60% {
+    opacity: 0.45;
+    filter: blur(calc(var(--elimination-blur) / 2));
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      scale(0.65);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(var(--elimination-blur));
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      scale(var(--elimination-scale-end));
+  }
+}
+
+@keyframes elimination-arc-down {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(0, 0) rotate(-2deg) scale(1);
+  }
+  20% {
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(12px, -6px) rotate(-8deg) scale(1);
+  }
+  40% {
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(24px, 16px) rotate(-4deg) scale(0.9);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(40px, 120px) rotate(-18deg) scale(0.35);
+  }
+}
+
+@keyframes loser-trail {
+  0% {
+    opacity: 0.7;
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.6) translateY(80px);
+  }
+}
+
+@keyframes elimination-arc-up {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(0, 0) rotate(2deg) scale(1);
+  }
+  30% {
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(-10px, -24px) rotate(8deg) scale(1.08);
+  }
+  60% {
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(-18px, -60px) rotate(12deg) scale(1.12);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(var(--angle, 0deg))
+      translateY(calc(-1 * var(--radius-px, 150px))) rotate(calc(-1 * var(--angle, 0deg)))
+      translate(-32px, -140px) rotate(18deg) scale(0.9);
+  }
+}
+
+@keyframes winner-glint {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .participant-node {
+    transition: none;
+  }
+
+  .participant-node.is-eliminating {
+    animation: none !important;
+    opacity: 0;
+    filter: none;
+  }
 }
 
 .choice-node-wrapper {
