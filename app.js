@@ -6,6 +6,37 @@ const INPUT_LIMITS = {
   max: 12,
 };
 
+const MODE_METADATA = Object.freeze({
+  winner: {
+    id: 'winner',
+    label: '승자 뽑기',
+    targetSurvivors: 1,
+    exclusionRule: 'drop-losers',
+  },
+  loser: {
+    id: 'loser',
+    label: '패자 뽑기',
+    targetSurvivors: 1,
+    exclusionRule: 'drop-winners',
+  },
+  'winner-dual': {
+    id: 'winner-dual',
+    label: '승자 2명 뽑기',
+    targetSurvivors: 2,
+    exclusionRule: 'drop-losers',
+  },
+  'loser-dual': {
+    id: 'loser-dual',
+    label: '패자 2명 뽑기',
+    targetSurvivors: 2,
+    exclusionRule: 'drop-winners',
+  },
+});
+
+const getModeMetadata = (modeKey) => MODE_METADATA[modeKey] ?? MODE_METADATA.winner;
+const resolveBaseMode = (modeId) =>
+  String(modeId ?? 'winner').startsWith('loser') ? 'loser' : 'winner';
+
 const log = (scope, message, payload) => {
   const timestamp = new Date().toLocaleTimeString('ko-KR', {
     hour12: false,
@@ -23,6 +54,8 @@ const log = (scope, message, payload) => {
 const state = {
   game: {
     mode: null,
+    modeLabel: '',
+    modeConfig: MODE_METADATA.winner,
     activeParticipants: [],
     waitingParticipants: [],
     history: [],
@@ -31,8 +64,17 @@ const state = {
       isRunning: false,
       currentRound: 0,
     },
-    finalParticipant: null,
+    targetSurvivors: MODE_METADATA.winner.targetSurvivors,
+    exclusionRule: MODE_METADATA.winner.exclusionRule,
+    pendingSuddenDeath: null,
     nameRadius: 0,
+    finalParticipants: [],
+    suddenDeath: {
+      status: 'idle',
+      lockedFinalistIds: [],
+      noticeRoundIndex: null,
+      pendingParticipantIds: [],
+    },
   },
   dom: {
     root: null,
@@ -49,12 +91,19 @@ const state = {
     finalPopupMode: null,
     finalPopupName: null,
     finalPopupClose: null,
+    suddenDeathNotice: null,
+    suddenDeathNoticeTitle: null,
+    suddenDeathNoticeMessage: null,
+    suddenDeathNoticeCard: null,
+    suddenDeathNoticePrevFocus: null,
   },
 };
 
 const GameState = {
   reset() {
     state.game.mode = null;
+    state.game.modeLabel = '';
+    state.game.modeConfig = MODE_METADATA.winner;
     state.game.activeParticipants = [];
     state.game.waitingParticipants = [];
     state.game.history = [];
@@ -63,11 +112,26 @@ const GameState = {
       isRunning: false,
       currentRound: 0,
     };
-    state.game.finalParticipant = null;
+    state.game.targetSurvivors = MODE_METADATA.winner.targetSurvivors;
+    state.game.exclusionRule = MODE_METADATA.winner.exclusionRule;
+    state.game.pendingSuddenDeath = null;
+    state.game.finalParticipants = [];
+    state.game.suddenDeath = {
+      status: 'idle',
+      lockedFinalistIds: [],
+      noticeRoundIndex: null,
+      pendingParticipantIds: [],
+    };
   },
 
   setMode(mode) {
-    state.game.mode = mode;
+    const metadata = getModeMetadata(mode);
+    state.game.mode = metadata.id;
+    state.game.modeLabel = metadata.label;
+    state.game.modeConfig = metadata;
+    state.game.targetSurvivors = metadata.targetSurvivors;
+    state.game.exclusionRule = metadata.exclusionRule;
+    state.game.pendingSuddenDeath = null;
   },
 
   setActiveParticipants(participants) {
@@ -88,19 +152,381 @@ const GameState = {
     state.game.countdown.currentRound = currentRound;
   },
 
-  finalize(participant) {
-    state.game.finalParticipant = participant;
+  finalize(participants) {
+    const normalized = Array.isArray(participants)
+      ? participants.filter(Boolean)
+      : participants
+      ? [participants]
+      : [];
+    state.game.finalParticipants = normalized;
     state.game.countdown.isRunning = false;
+    state.game.pendingSuddenDeath = null;
+    state.game.suddenDeath.status = 'idle';
+    state.game.suddenDeath.lockedFinalistIds = normalized
+      .map((participant) => participant?.id)
+      .filter(Boolean);
+    state.game.suddenDeath.pendingParticipantIds = [];
+    state.game.suddenDeath.noticeRoundIndex = null;
   },
 
   setNameRadius(radius) {
     state.game.nameRadius = radius;
   },
 
+  setPendingSuddenDeath(participantIds) {
+    if (Array.isArray(participantIds) && participantIds.length) {
+      const unique = [...new Set(participantIds)];
+      state.game.pendingSuddenDeath = unique;
+      state.game.suddenDeath.pendingParticipantIds = unique;
+    } else {
+      state.game.pendingSuddenDeath = null;
+      state.game.suddenDeath.pendingParticipantIds = [];
+    }
+  },
+
+  setSuddenDeathStatus(status = 'idle') {
+    state.game.suddenDeath.status = status;
+  },
+
+  getSuddenDeathStatus() {
+    return state.game.suddenDeath.status ?? 'idle';
+  },
+
+  setSuddenDeathLocked(ids = []) {
+    const normalized = Array.isArray(ids)
+      ? ids.filter(Boolean)
+      : ids
+      ? [ids]
+      : [];
+    state.game.suddenDeath.lockedFinalistIds = [...new Set(normalized)];
+  },
+
+  addSuddenDeathLocked(ids = []) {
+    const bucket = new Set(state.game.suddenDeath.lockedFinalistIds);
+    if (Array.isArray(ids)) {
+      ids.filter(Boolean).forEach((id) => bucket.add(id));
+    } else if (ids) {
+      bucket.add(ids);
+    }
+    state.game.suddenDeath.lockedFinalistIds = [...bucket];
+  },
+
+  getSuddenDeathLocked() {
+    return [...state.game.suddenDeath.lockedFinalistIds];
+  },
+
+  setSuddenDeathNoticeRound(index = null) {
+    state.game.suddenDeath.noticeRoundIndex = Number.isFinite(index) ? index : null;
+  },
+
+  getSuddenDeathNoticeRound() {
+    return state.game.suddenDeath.noticeRoundIndex;
+  },
+
+  resolveParticipantsByIds(ids = []) {
+    const pools = [...state.game.activeParticipants, ...state.game.waitingParticipants];
+    const registry = new Map(pools.map((participant) => [participant.id, participant]));
+    return ids
+      .map((id) => registry.get(id))
+      .filter(Boolean);
+  },
+
+  getPendingSuddenDeathParticipants() {
+    return [...(state.game.suddenDeath.pendingParticipantIds ?? [])];
+  },
+
+  getFinalParticipants() {
+    return [...state.game.finalParticipants];
+  },
+
+  getPendingSuddenDeath() {
+    return state.game.pendingSuddenDeath;
+  },
+
+  getModeConfig() {
+    return state.game.modeConfig ?? MODE_METADATA.winner;
+  },
+
+  getTargetSurvivors() {
+    return state.game.targetSurvivors ?? MODE_METADATA.winner.targetSurvivors;
+  },
+
   serialize() {
     return structuredClone(state.game);
   },
 };
+
+const SurvivorEvaluator = {
+  evaluate({ participants = [], outcome, metadata }) {
+    const participantIds = participants.map((participant) => participant.id);
+    if (!outcome || outcome.result === 'stalemate') {
+      return {
+        survivorIds: participantIds,
+        eliminatedIds: [],
+        isStalemate: true,
+      };
+    }
+
+    const dropWinners = metadata?.exclusionRule === 'drop-winners';
+    const rawSurvivors = dropWinners ? outcome.losers : outcome.winners;
+    const rawEliminated = dropWinners ? outcome.winners : outcome.losers;
+
+    const survivorIds =
+      Array.isArray(rawSurvivors) && rawSurvivors.length
+        ? [...new Set(rawSurvivors)]
+        : participantIds;
+    const eliminatedIds =
+      Array.isArray(rawEliminated) && rawEliminated.length
+        ? [...new Set(rawEliminated)]
+        : [];
+
+    return {
+      survivorIds,
+      eliminatedIds,
+      isStalemate: false,
+    };
+  },
+
+  buildParticipantPools({ survivorIds = [], previousActive = [], previousWaiting = [] }) {
+    const pool = new Map(
+      [...previousActive, ...previousWaiting].map((participant) => [participant.id, { ...participant }])
+    );
+
+    const survivors = survivorIds
+      .map((id) => pool.get(id))
+      .filter(Boolean)
+      .map((participant) => ({ ...participant, status: 'active' }));
+
+    const survivorSet = new Set(survivors.map((participant) => participant.id));
+    const newlyWaiting = previousActive
+      .filter((participant) => !survivorSet.has(participant.id))
+      .map((participant) => ({ ...participant, status: 'waiting' }));
+    const retainedWaiting = previousWaiting
+      .filter((participant) => !survivorSet.has(participant.id))
+      .map((participant) => ({ ...participant, status: 'waiting' }));
+
+    return {
+      survivors,
+      waiting: [...newlyWaiting, ...retainedWaiting],
+    };
+  },
+};
+
+const SuddenDeathCoordinator = (() => {
+  const state = {
+    status: 'idle', // idle | notifying | active
+    lockedFinalistIds: [],
+    pendingParticipantIds: [],
+  };
+
+  const markIdle = () => {
+    state.status = 'idle';
+    state.pendingParticipantIds = [];
+    GameState.setSuddenDeathStatus('idle');
+    GameState.setSuddenDeathNoticeRound(null);
+    GameState.setPendingSuddenDeath(null);
+    if (typeof render?.disableSuddenDeathTheme === 'function') {
+      render.disableSuddenDeathTheme();
+    }
+  };
+
+  const reset = () => {
+    state.status = 'idle';
+    state.lockedFinalistIds = [];
+    state.pendingParticipantIds = [];
+    GameState.setSuddenDeathLocked([]);
+    GameState.setSuddenDeathStatus('idle');
+    GameState.setSuddenDeathNoticeRound(null);
+    GameState.setPendingSuddenDeath(null);
+    if (typeof render?.disableSuddenDeathTheme === 'function') {
+      render.disableSuddenDeathTheme();
+    }
+  };
+
+  const ensureLockedUpdated = () => {
+    GameState.setSuddenDeathLocked(state.lockedFinalistIds);
+  };
+
+  const schedule = ({
+    survivors = [],
+    eliminatedIds = [],
+    metadata,
+    isStalemate = false,
+    roundIndex,
+  }) => {
+    const config = metadata ?? GameState.getModeConfig();
+    const target = config?.targetSurvivors ?? 1;
+    const result = {
+      scheduled: false,
+      notice: false,
+      nextActiveIds: Array.isArray(survivors) ? [...survivors] : [],
+      finalize: false,
+      finalIds: [],
+      lockedIds: [...state.lockedFinalistIds],
+    };
+
+    if (target <= 1) {
+      markIdle();
+      return result;
+    }
+
+    const uniqueSurvivors = Array.isArray(survivors) ? [...new Set(survivors)] : [];
+    const uniqueEliminated = Array.isArray(eliminatedIds) ? [...new Set(eliminatedIds)] : [];
+
+    if (isStalemate) {
+      const configLabel = metadata?.label ?? '듀얼 모드';
+      const normalized = uniqueSurvivors.length ? [...uniqueSurvivors] : GameState.getPendingSuddenDeathParticipants();
+      if (state.lockedFinalistIds.length && normalized.length) {
+        state.pendingParticipantIds = [...normalized];
+        GameState.setPendingSuddenDeath(normalized);
+        const enteringSuddenDeath = state.status === 'idle';
+        state.status = enteringSuddenDeath ? 'notifying' : 'active';
+        GameState.setSuddenDeathStatus(state.status);
+        GameState.setSuddenDeathNoticeRound(enteringSuddenDeath ? roundIndex : null);
+        ensureLockedUpdated();
+        result.scheduled = true;
+        result.notice = enteringSuddenDeath;
+        result.nextActiveIds = [...normalized];
+        result.lockedIds = [...state.lockedFinalistIds];
+        log(
+          enteringSuddenDeath ? '서든데스 안내' : '서든데스 진행',
+          `${configLabel} - 서든데스 무승부, 동일 후보로 재경기합니다.`
+        );
+        return result;
+      }
+      markIdle();
+      return result;
+    }
+
+    const remainingSlots = Math.max(target - state.lockedFinalistIds.length, 0);
+
+    if (remainingSlots <= 0) {
+      result.finalize = true;
+      result.finalIds = [...state.lockedFinalistIds];
+      markIdle();
+      return result;
+    }
+
+    if (!uniqueSurvivors.length) {
+      GameState.setPendingSuddenDeath(null);
+      state.pendingParticipantIds = [];
+      GameState.setSuddenDeathStatus('idle');
+      GameState.setSuddenDeathNoticeRound(null);
+      return result;
+    }
+
+    if (uniqueSurvivors.length === remainingSlots) {
+      const finalIds = [...new Set([...state.lockedFinalistIds, ...uniqueSurvivors])];
+      state.lockedFinalistIds = finalIds;
+      ensureLockedUpdated();
+      result.finalize = true;
+      result.finalIds = finalIds;
+      markIdle();
+      return result;
+    }
+
+    if (uniqueSurvivors.length > remainingSlots) {
+      const targetLabel = config?.label ?? '듀얼 모드';
+      if (!state.lockedFinalistIds.length) {
+        GameState.setPendingSuddenDeath(null);
+        state.pendingParticipantIds = [];
+        GameState.setSuddenDeathStatus('idle');
+        GameState.setSuddenDeathNoticeRound(null);
+        log(
+          '라운드 상태',
+          `${targetLabel} - 생존자 ${uniqueSurvivors.length}명, 서든데스 없이 다음 라운드를 진행합니다.`
+        );
+        return result;
+      }
+
+      state.pendingParticipantIds = [...uniqueSurvivors];
+      GameState.setPendingSuddenDeath(uniqueSurvivors);
+      const enteringSuddenDeath = state.status === 'idle';
+      state.status = enteringSuddenDeath ? 'notifying' : 'active';
+      GameState.setSuddenDeathStatus(state.status);
+      GameState.setSuddenDeathNoticeRound(enteringSuddenDeath ? roundIndex : null);
+      result.scheduled = true;
+      result.notice = enteringSuddenDeath;
+      result.nextActiveIds = [...uniqueSurvivors];
+      result.lockedIds = [...state.lockedFinalistIds];
+      log(
+        enteringSuddenDeath ? '서든데스 안내' : '서든데스 진행',
+        `${targetLabel} - 라운드 ${roundIndex} 종료, 후보 ${uniqueSurvivors.length}명 · 목표 ${target}명`
+      );
+      return result;
+    }
+
+    // uniqueSurvivors.length < remainingSlots
+    state.lockedFinalistIds = [...new Set([...state.lockedFinalistIds, ...uniqueSurvivors])];
+    ensureLockedUpdated();
+    const updatedRemaining = Math.max(target - state.lockedFinalistIds.length, 0);
+
+    if (updatedRemaining <= 0) {
+      result.finalize = true;
+      result.finalIds = [...state.lockedFinalistIds];
+      markIdle();
+      return result;
+    }
+
+    const candidatePool = [...uniqueEliminated];
+    state.pendingParticipantIds = candidatePool;
+    GameState.setPendingSuddenDeath(candidatePool);
+    const candidateCount = candidatePool.length;
+    const enteringSuddenDeath = state.status === 'idle';
+    state.status = enteringSuddenDeath ? 'notifying' : 'active';
+    GameState.setSuddenDeathStatus(state.status);
+    GameState.setSuddenDeathNoticeRound(enteringSuddenDeath ? roundIndex : null);
+    result.scheduled = candidateCount > 0;
+    result.notice = enteringSuddenDeath;
+    result.nextActiveIds = candidatePool;
+    result.lockedIds = [...state.lockedFinalistIds];
+    const label = config?.label ?? '듀얼 모드';
+    log(
+      enteringSuddenDeath ? '서든데스 안내' : '서든데스 진행',
+      `${label} - 라운드 ${roundIndex}에서 ${state.lockedFinalistIds.length}명 확정, 남은 ${updatedRemaining}명을 찾습니다.`
+    );
+    if (!candidateCount) {
+      log('서든데스 경고', '계속 진행할 후보가 없어 즉시 종료 상태로 전환합니다.');
+      result.finalize = true;
+      result.finalIds = [...state.lockedFinalistIds];
+      markIdle();
+    }
+    return result;
+  };
+
+  const markNoticeComplete = () => {
+    if (state.status === 'notifying') {
+      state.status = 'active';
+      GameState.setSuddenDeathStatus('active');
+      GameState.setSuddenDeathNoticeRound(null);
+    }
+  };
+
+  const shouldContinue = () => {
+    if (!state.pendingParticipantIds.length) return false;
+    if (state.status === 'notifying') return false;
+    const snapshot = GameState.serialize();
+    const target = snapshot.targetSurvivors ?? 1;
+    if (target <= 1) return false;
+    const activeCount = snapshot.activeParticipants.length;
+    return activeCount >= 2;
+  };
+
+  const complete = () => {
+    reset();
+  };
+
+  const getLockedFinalists = () => [...state.lockedFinalistIds];
+
+  return {
+    schedule,
+    markNoticeComplete,
+    shouldContinue,
+    reset,
+    complete,
+    getLockedFinalists,
+  };
+})();
 
 const events = (() => {
   const listeners = new Map();
@@ -159,8 +585,12 @@ const HistoryRenderer = {
   },
   createCard(round) {
     const card = document.createElement('article');
-    const mode = round.mode || state.game.mode || 'winner';
-    card.className = `history-card history-card--${mode === 'winner' ? 'winner' : 'loser'}`;
+    const modeId = round.mode || state.game.mode || 'winner';
+    const baseMode = resolveBaseMode(modeId);
+    card.className = `history-card history-card--${baseMode === 'winner' ? 'winner' : 'loser'}`;
+    if (round.suddenDeath) {
+      card.classList.add('history-card--sudden-death');
+    }
 
     const header = document.createElement('div');
     header.className = 'history-card__header';
@@ -173,13 +603,27 @@ const HistoryRenderer = {
     });
     const probPercent = (prob * 100).toFixed(1);
 
-    header.innerHTML = `<span>라운드 ${round.index ?? '?'}</span><span class="probability">${probPercent}%</span>`;
+    const survivorLabel = baseMode === 'winner' ? '남은 우승 후보' : '남은 패자 후보';
+    const countLine =
+      typeof round.remainingCount === 'number'
+        ? `${survivorLabel} ${round.remainingCount}명 · 목표 ${round.targetCount ?? '?'}명`
+        : '';
+
+    header.innerHTML = `
+      <div class="history-card__meta">
+        <span class="history-card__round">라운드 ${round.index ?? '?'}</span>
+        <span class="history-card__probability">${probPercent}%</span>
+      </div>
+      ${countLine ? `<span class="survivor-meta">${countLine}</span>` : ''}
+    `;
 
     const body = document.createElement('div');
     body.className = 'history-card__body';
 
     const isStalemate = (round.winners ?? []).length === 0 && (round.losers ?? []).length === 0;
-    const eliminatedIds = new Set(mode === 'winner' ? round.losers : round.winners);
+    const eliminatedIds = new Set(
+      baseMode === 'winner' ? round.losers : round.winners
+    );
 
     (round.choices ?? []).forEach((choice) => {
       const row = document.createElement('div');
@@ -190,7 +634,7 @@ const HistoryRenderer = {
       let nameHtml;
       if (isStalemate) {
         nameHtml = `😐 ${name}`;
-      } else if (mode === 'winner') {
+      } else if (baseMode === 'winner') {
         nameHtml = isEliminated ? `💀 ${name}` : `😊 ${name}`;
       } else { // loser mode
         nameHtml = isEliminated ? `😊 ${name}` : `💀 ${name}`;
@@ -235,6 +679,7 @@ const render = {
     if (state.dom.finalPopupClose) {
       state.dom.finalPopupClose.addEventListener('click', render.hideFinalPopup);
     }
+    render.ensureSuddenDeathNotice();
   },
   initPlaceholders() {
     if (!state.dom.waitingPanel) return;
@@ -312,11 +757,18 @@ const render = {
   hideCountdown() {
     render.updateCountdown('');
   },
-  showFinalPopup({ participantName, mode }) {
+  showFinalPopup({ participantName, participantNames, mode }) {
     if (!state.dom.finalPopup) return;
+    const baseMode = resolveBaseMode(mode);
     state.dom.finalPopupMode.textContent =
-      mode === 'winner' ? '최종 승자' : '최종 패자';
-    state.dom.finalPopupName.textContent = participantName ?? '-';
+      baseMode === 'winner' ? '최종 승자' : '최종 패자';
+    const names =
+      Array.isArray(participantNames) && participantNames.length
+        ? participantNames
+        : participantName
+        ? [participantName]
+        : [];
+    state.dom.finalPopupName.textContent = names.length ? names.join(', ') : '-';
     state.dom.finalPopup.hidden = false;
     const previouslyFocused = document.activeElement;
     state.dom.finalPopup.dataset.previousFocus =
@@ -363,6 +815,76 @@ const render = {
       render.hideFinalPopup();
     }
   },
+  ensureSuddenDeathNotice() {
+    if (state.dom.suddenDeathNotice) return;
+    let notice = document.getElementById('sudden-death-notice');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.id = 'sudden-death-notice';
+      notice.className = 'sudden-death-notice';
+      notice.hidden = true;
+      notice.setAttribute('aria-hidden', 'true');
+      notice.innerHTML = `
+        <div class="sudden-death-notice__card" role="alertdialog" aria-modal="true" tabindex="-1" aria-live="assertive">
+          <h2 class="sudden-death-notice__title">서든데스 준비</h2>
+          <p class="sudden-death-notice__message">남은 참가자를 위한 서든데스를 준비합니다.</p>
+        </div>
+      `;
+      document.body.appendChild(notice);
+    }
+    state.dom.suddenDeathNotice = notice;
+    state.dom.suddenDeathNoticeTitle = notice.querySelector('.sudden-death-notice__title');
+    state.dom.suddenDeathNoticeMessage = notice.querySelector('.sudden-death-notice__message');
+    state.dom.suddenDeathNoticeCard = notice.querySelector('.sudden-death-notice__card');
+  },
+  showSuddenDeathNotice({ lockedParticipants = [], remainingSlots = 1, mode } = {}) {
+    render.ensureSuddenDeathNotice();
+    if (!state.dom.suddenDeathNotice) return;
+    const baseMode = resolveBaseMode(mode ?? state.game.mode);
+    const lockedNames = lockedParticipants.map((participant) => participant?.name ?? '').filter(Boolean);
+    render.enableSuddenDeathTheme();
+    if (state.dom.suddenDeathNoticeTitle) {
+      state.dom.suddenDeathNoticeTitle.textContent =
+        baseMode === 'winner' ? '승자 서든데스 준비' : '패자 서든데스 준비';
+    }
+    if (state.dom.suddenDeathNoticeMessage) {
+      const parts = [];
+      if (lockedNames.length) {
+        parts.push(`${lockedNames.join(', ')} ${lockedNames.length > 1 ? '참가자들이' : '참가자가'} 확정되었습니다.`);
+      }
+      parts.push(`남은 ${remainingSlots}명을 위한 서든데스를 곧 시작합니다.`);
+      state.dom.suddenDeathNoticeMessage.textContent = parts.join(' ');
+    }
+    const previouslyFocused = document.activeElement;
+    if (
+      previouslyFocused &&
+      previouslyFocused !== document.body &&
+      previouslyFocused !== state.dom.suddenDeathNoticeCard
+    ) {
+      state.dom.suddenDeathNoticePrevFocus = previouslyFocused;
+    } else {
+      state.dom.suddenDeathNoticePrevFocus = null;
+    }
+    state.dom.suddenDeathNotice.hidden = false;
+    state.dom.suddenDeathNotice.setAttribute('aria-hidden', 'false');
+    state.dom.suddenDeathNoticeCard?.focus();
+    log(
+      '서든데스 안내',
+      `3초 뒤 서든데스를 시작합니다.${lockedNames.length ? ` 확정된 ${lockedNames.length}명: ${lockedNames.join(', ')}` : ''}`
+    );
+  },
+  hideSuddenDeathNotice() {
+    if (!state.dom.suddenDeathNotice) return;
+    state.dom.suddenDeathNotice.hidden = true;
+    state.dom.suddenDeathNotice.setAttribute('aria-hidden', 'true');
+    const focusTarget = state.dom.suddenDeathNoticePrevFocus;
+    state.dom.suddenDeathNoticePrevFocus = null;
+    if (focusTarget && typeof focusTarget.focus === 'function' && document.contains(focusTarget)) {
+      focusTarget.focus();
+    } else if (state.dom.inputSlot) {
+      state.dom.inputSlot.querySelector('input')?.focus();
+    }
+  },
   reset() {
     render.updateCountdown('');
     render.initPlaceholders();
@@ -375,6 +897,20 @@ const render = {
     render.updateCountdownIndicator('0');
     HistoryRenderer.reset();
     render.hideFinalPopup();
+    render.hideSuddenDeathNotice();
+    render.disableSuddenDeathTheme();
+  },
+  enableSuddenDeathTheme() {
+    document.body.classList.add('is-sudden-death');
+    state.dom.root?.classList.add('is-sudden-death');
+    const grid = document.querySelector('.mode-button-grid');
+    grid?.classList.add('is-sudden-death');
+  },
+  disableSuddenDeathTheme() {
+    document.body.classList.remove('is-sudden-death');
+    state.dom.root?.classList.remove('is-sudden-death');
+    const grid = document.querySelector('.mode-button-grid');
+    grid?.classList.remove('is-sudden-death');
   },
 };
 
@@ -448,25 +984,62 @@ const Controls = (() => {
   const refs = {
     input: null,
     winnerBtn: null,
+    winnerDualBtn: null,
     loserBtn: null,
+    loserDualBtn: null,
   };
 
   const stateCache = {
     parsed: InputParser.parse(''),
   };
   let lastButtonsEnabled = false;
+  let lastActiveMode = null;
+
+  const setActiveModeButton = (modeId) => {
+    const resolved = modeId ?? null;
+    const target =
+      resolved === 'winner'
+        ? refs.winnerBtn
+        : resolved === 'winner-dual'
+        ? refs.winnerDualBtn
+        : resolved === 'loser'
+        ? refs.loserBtn
+        : resolved === 'loser-dual'
+        ? refs.loserDualBtn
+        : null;
+    if (lastActiveMode !== resolved) {
+      if (resolved) {
+        const metadata = getModeMetadata(resolved);
+        log('모드 표시', `${metadata.label} 버튼을 강조합니다.`);
+      } else if (lastActiveMode) {
+        log('모드 표시', '모드 강조를 초기화합니다.');
+      }
+      lastActiveMode = resolved;
+    }
+    [refs.winnerBtn, refs.winnerDualBtn, refs.loserBtn, refs.loserDualBtn].forEach((btn) => {
+      if (!btn) return;
+      const isActive = btn === target;
+      btn.classList.toggle('is-active', isActive);
+      if (isActive) {
+        btn.setAttribute('aria-pressed', 'true');
+      } else {
+        btn.setAttribute('aria-pressed', 'false');
+      }
+    });
+  };
 
   const handleInput = () => {
     if (!refs.input) return;
     stateCache.parsed = InputParser.parse(refs.input.value);
     GameState.setActiveParticipants(stateCache.parsed.participants);
     Controls.updateButtons(stateCache.parsed.isCountValid);
+    setActiveModeButton(null);
     render.refreshParticipants(stateCache.parsed.participants);
     log('참가자', `현재 ${stateCache.parsed.count}명 입력됨`);
     PubSub.emit('participants:update', { ...stateCache.parsed });
   };
 
-const handleStart = (mode) => {
+  const handleStart = (mode) => {
     if (!refs.input) return;
     const { participants, isCountValid, warnings } = InputParser.parse(refs.input.value);
     if (!isCountValid) {
@@ -477,11 +1050,16 @@ const handleStart = (mode) => {
       log('시작 불가', message);
       return;
     }
+    const metadata = getModeMetadata(mode);
     GameState.reset();
     GameState.setMode(mode);
     GameState.setActiveParticipants(participants);
     Controls.lock();
-    log('게임 시작', `${mode === 'winner' ? '승자' : '패자'} 모드로 시작합니다.`);
+    setActiveModeButton(GameState.serialize().mode);
+    log(
+      '게임 시작',
+      `${metadata.label} 모드로 시작합니다. 목표 생존자 ${metadata.targetSurvivors}명`
+    );
     CountdownOverlayController.showIntro();
     PubSub.emit('game:start', {
       mode,
@@ -493,7 +1071,9 @@ const handleStart = (mode) => {
     attach() {
       refs.input = document.getElementById('participants-input');
       refs.winnerBtn = document.getElementById('start-winner');
+      refs.winnerDualBtn = document.getElementById('start-winner-dual');
       refs.loserBtn = document.getElementById('start-loser');
+      refs.loserDualBtn = document.getElementById('start-loser-dual');
 
       if (refs.input) {
         refs.input.addEventListener('input', handleInput);
@@ -501,14 +1081,21 @@ const handleStart = (mode) => {
       if (refs.winnerBtn) {
         refs.winnerBtn.addEventListener('click', () => handleStart('winner'));
       }
+      if (refs.winnerDualBtn) {
+        refs.winnerDualBtn.addEventListener('click', () => handleStart('winner-dual'));
+      }
       if (refs.loserBtn) {
         refs.loserBtn.addEventListener('click', () => handleStart('loser'));
       }
+      if (refs.loserDualBtn) {
+        refs.loserDualBtn.addEventListener('click', () => handleStart('loser-dual'));
+      }
 
       Controls.updateButtons(false);
+      setActiveModeButton(null);
     },
     updateButtons(isValid) {
-      [refs.winnerBtn, refs.loserBtn].forEach((btn) => {
+      [refs.winnerBtn, refs.winnerDualBtn, refs.loserBtn, refs.loserDualBtn].forEach((btn) => {
         if (btn) {
           btn.disabled = !isValid;
         }
@@ -531,6 +1118,7 @@ const handleStart = (mode) => {
         refs.input.disabled = false;
       }
       log('입력 해제', '새로운 참가자를 입력할 수 있습니다.');
+      setActiveModeButton(null);
       handleInput();
     },
   };
@@ -585,6 +1173,7 @@ const CountdownController = (() => {
   let timerId = null;
   let endTimestamp = 0;
   let currentRoundIndex = 0;
+  let lastDurationMs = 0;
 
   const durationForRound = (roundIndex = 0) => {
     if (roundIndex < 5) return 5000;
@@ -632,33 +1221,59 @@ const CountdownController = (() => {
   };
 
   return {
-    start(roundIndex = 0) {
+    start(roundIndex = 0, { durationMs } = {}) {
       stopInternal();
       currentRoundIndex = roundIndex;
-      const durationMs = durationForRound(roundIndex);
-      endTimestamp = Date.now() + durationMs;
-      updateCountdownState(durationMs, true);
+      const resolvedDuration = Number.isFinite(durationMs) && durationMs > 0
+        ? durationMs
+        : durationForRound(roundIndex);
+      lastDurationMs = resolvedDuration;
+      endTimestamp = Date.now() + resolvedDuration;
+      updateCountdownState(resolvedDuration, true);
       scheduleTicks();
-      return durationMs;
+      return resolvedDuration;
     },
     stop: stopInternal,
+    getLastDuration() {
+      return lastDurationMs;
+    },
   };
 })();
 
 const WaitingPanelRenderer = {
   reset() {
     if (!state.dom.waitingPanel) return;
-    state.dom.waitingPanel.textContent = '대기자: 없음';
+    state.dom.waitingPanel.innerHTML = '<p class="placeholder">대기자가 없습니다.</p>';
   },
-  render(list) {
+  render(list = [], { mode } = {}) {
     if (!state.dom.waitingPanel) return;
 
-    if (!list.length) {
+    const baseMode = resolveBaseMode(mode ?? state.game.mode ?? 'winner');
+    const lockedLabel = baseMode === 'winner' ? '승자' : '패자';
+
+    const locked = list.filter((participant) => participant.status === 'locked');
+    const waiting = list.filter((participant) => participant.status !== 'locked');
+
+    if (!locked.length && !waiting.length) {
       WaitingPanelRenderer.reset();
       return;
     }
-    const names = list.map((p) => p.name).join(', ');
-    state.dom.waitingPanel.textContent = `대기자: ${names}`;
+
+    state.dom.waitingPanel.innerHTML = '';
+    if (locked.length) {
+      const lockedNames = locked.map((participant) => participant.name).join(', ');
+      const lockedLine = document.createElement('p');
+      lockedLine.className = 'panel-line panel-line--locked';
+      lockedLine.textContent = `${lockedLabel}: ${lockedNames}`;
+      state.dom.waitingPanel.appendChild(lockedLine);
+    }
+    if (waiting.length) {
+      const waitingNames = waiting.map((participant) => participant.name).join(', ');
+      const waitingLine = document.createElement('p');
+      waitingLine.className = 'panel-line';
+      waitingLine.textContent = `대기자: ${waitingNames}`;
+      state.dom.waitingPanel.appendChild(waitingLine);
+    }
   },
 };
 
@@ -670,6 +1285,11 @@ const DwellController = (() => {
     start(payload) {
       DwellController.clear();
       log('대기 시간', '결과를 3초간 표시합니다.');
+      if (payload?.suddenDeath) {
+        const snapshot = GameState.serialize();
+        const target = snapshot.targetSurvivors ?? 1;
+        log('대기 시간', `서든데스 준비 중: 목표 생존자 ${target}명`);
+      }
       timerId = window.setTimeout(() => {
         timerId = null;
         log('대기 시간', '다음 라운드를 진행합니다.');
@@ -737,11 +1357,12 @@ const EliminationSequenceController = (() => {
     return Math.min(MAX_DURATION, Math.max(MIN_DURATION, value));
   };
 
-  const resolveMode = (contextMode) => contextMode ?? GameState.serialize().mode ?? 'winner';
+  const resolveModeId = (contextMode) => contextMode ?? GameState.serialize().mode ?? 'winner';
 
   const resolveEliminatedIds = (round, mode) => {
     if (!round) return [];
-    if (mode === 'winner') return Array.isArray(round.losers) ? [...round.losers] : [];
+    const baseMode = resolveBaseMode(mode);
+    if (baseMode === 'winner') return Array.isArray(round.losers) ? [...round.losers] : [];
     return Array.isArray(round.winners) ? [...round.winners] : [];
   };
 
@@ -819,7 +1440,7 @@ const EliminationSequenceController = (() => {
         cleanup();
       };
 
-      const triumphantExit = sequence.mode === 'loser';
+      const triumphantExit = resolveBaseMode(sequence.mode) === 'loser';
       const runtime = Math.min(
         triumphantExit ? sequence.durationMs + 180 : sequence.durationMs,
         MAX_DURATION
@@ -835,7 +1456,7 @@ const EliminationSequenceController = (() => {
 
       window.requestAnimationFrame(() => {
         target.classList.add('is-eliminating');
-        if (sequence.mode === 'winner') {
+        if (resolveBaseMode(sequence.mode) === 'winner') {
           target.classList.add('is-eliminating--loser');
         } else {
           target.classList.add('is-eliminating--winner');
@@ -855,10 +1476,11 @@ const EliminationSequenceController = (() => {
 
   const buildSequence = (context = {}) => {
     const round = context.round ?? null;
-    const mode = resolveMode(context.mode);
+    const mode = resolveModeId(context.mode);
+    const baseMode = resolveBaseMode(mode);
     const eliminatedIds = Array.isArray(context.eliminatedIds)
       ? [...context.eliminatedIds]
-      : resolveEliminatedIds(round, mode);
+      : resolveEliminatedIds(round, baseMode);
     const durationMs = clampDuration(context.durationMs ?? DEFAULT_DURATION);
 
     pendingSequence = {
@@ -930,7 +1552,7 @@ const EliminationSequenceController = (() => {
     }
 
     emitWithStatus('round:elimination:start', sequence);
-    const roleLabel = sequence.mode === 'winner' ? '패배자' : '승자';
+    const roleLabel = resolveBaseMode(sequence.mode) === 'winner' ? '패배자' : '승자';
     log(
       '탈락 애니메이션',
       `${roleLabel} ${participantNames.length}명 애니메이션 시작: ${participantNames.join(', ')}`
@@ -978,35 +1600,88 @@ const EliminationSequenceController = (() => {
   };
 })();
 
-const applyNextActiveParticipants = (nextActiveIds = [], mode) => {
-  const prevActive = state.game.activeParticipants;
-  const prevWaiting = state.game.waitingParticipants;
-  const pool = new Map([...prevActive, ...prevWaiting].map((participant) => [participant.id, { ...participant }]));
+const applyNextActiveParticipants = ({
+  survivorIds = [],
+  eliminatedIds = [],
+  metadata,
+} = {}) => {
+  const snapshot = GameState.serialize();
+  const { survivors, waiting } = SurvivorEvaluator.buildParticipantPools({
+    survivorIds,
+    previousActive: snapshot.activeParticipants,
+    previousWaiting: snapshot.waitingParticipants,
+  });
 
-  const newActive = nextActiveIds
-    .map((id) => pool.get(id))
-    .filter(Boolean)
-    .map((participant) => ({ ...participant, status: 'active' }));
+  const lockedIds = GameState.getSuddenDeathLocked();
+  const lockedSet = new Set(lockedIds);
 
-  const newActiveSet = new Set(nextActiveIds);
-  const newlyWaiting = prevActive
-    .filter((participant) => !newActiveSet.has(participant.id))
-    .map((participant) => ({ ...participant, status: 'waiting' }));
-  const waitingKeep = prevWaiting
-    .filter((participant) => !newActiveSet.has(participant.id))
-    .map((participant) => ({ ...participant, status: 'waiting' }));
-  const waitingList = [...newlyWaiting, ...waitingKeep];
+  const decoratedWaiting = waiting.map((participant) =>
+    lockedSet.has(participant.id)
+      ? { ...participant, status: 'locked' }
+      : participant
+  );
 
-  GameState.setActiveParticipants(newActive);
-  GameState.setWaitingParticipants(waitingList);
-  render.refreshParticipants(newActive);
-  WaitingPanelRenderer.render(waitingList);
+  GameState.setActiveParticipants(survivors);
+  GameState.setWaitingParticipants(decoratedWaiting);
+  render.refreshParticipants(survivors);
+
+  const config = metadata ?? GameState.getModeConfig();
+  WaitingPanelRenderer.render(decoratedWaiting, { mode: config?.id ?? snapshot.mode ?? 'winner' });
+  const modeId = config?.id ?? snapshot.mode ?? 'winner';
+  const baseMode = resolveBaseMode(modeId);
+  const label = config?.label ?? (baseMode === 'winner' ? '승자 뽑기' : '패자 뽑기');
   const summary = {
-    activeCount: newActive.length,
-    waitingCount: waitingList.length,
-    mode,
+    mode: modeId,
+    baseMode,
+    label,
+    activeCount: survivors.length,
+    waitingCount: decoratedWaiting.filter((participant) => participant.status !== 'locked').length,
+    lockedCount: lockedIds.length,
+    targetSurvivors: config?.targetSurvivors ?? GameState.getTargetSurvivors(),
+    pendingSuddenDeathCount: Array.isArray(GameState.getPendingSuddenDeath())
+      ? GameState.getPendingSuddenDeath().length
+      : 0,
   };
-  log('패널 상태', `활성 ${summary.activeCount}명 / 대기 ${summary.waitingCount}명 (${mode})`);
+
+  if (eliminatedIds.length) {
+    const nameMap = new Map(
+      [...snapshot.activeParticipants, ...snapshot.waitingParticipants].map((participant) => [
+        participant.id,
+        participant.name,
+      ])
+    );
+    const names = eliminatedIds
+      .map((id) => nameMap.get(id) ?? id)
+      .filter(Boolean)
+      .join(', ');
+    if (names) {
+      log(
+        '라운드 결과',
+        `${label} 모드 제외 대상: ${names}`
+      );
+    }
+  }
+
+  log(
+    '패널 상태',
+    `${label} - 활성 ${summary.activeCount}명 / 대기 ${summary.waitingCount}명${
+      summary.lockedCount ? ` / 확정 ${summary.lockedCount}명` : ''
+    } (목표 ${summary.targetSurvivors}명)`
+  );
+  if (summary.pendingSuddenDeathCount > 0) {
+    log(
+      '서든데스 대기',
+      `${label} 모드 서든데스 후보 ${summary.pendingSuddenDeathCount}명`
+    );
+  }
+  if (summary.lockedCount > 0) {
+    const lockedParticipants = GameState.resolveParticipantsByIds(lockedIds);
+    const lockedNames = lockedParticipants.map((participant) => participant?.name ?? '알 수 없음').join(', ');
+    log(
+      '확정 대상',
+      `${label} 모드 확정 ${summary.lockedCount}명: ${lockedNames}`
+    );
+  }
   PubSub.emit('round:panel:update', summary);
 };
 
@@ -1015,21 +1690,37 @@ PubSub.on('game:start', () => {
   WaitingPanelRenderer.reset();
   DwellController.clear();
   EliminationSequenceController.cancel();
+  SuddenDeathCoordinator.reset();
+  if (typeof render.hideSuddenDeathNotice === 'function') {
+    render.hideSuddenDeathNotice();
+  }
+  state.dwellPayload = null;
 });
 
 PubSub.on('round:complete', (payload) => {
   if (!payload) return;
-  const { round, nextActiveIds = [] } = payload;
+  const { round, nextActiveIds = [], eliminatedIds = [] } = payload;
   if (round) {
     HistoryRenderer.append(round);
   }
   const mode = round?.mode || state.game.mode;
-  DwellController.start({ round, nextActiveIds, mode });
+  DwellController.start({
+    round,
+    nextActiveIds,
+    eliminatedIds,
+    mode,
+    suddenDeath: Boolean(round?.suddenDeath),
+  });
 });
 
 PubSub.on('countdown:start', (payload) => {
   const roundIndex = (payload?.roundIndex ?? 0) + 1;
-  log('카운트다운', `${roundIndex}라운드 ${payload?.durationMs ?? 0}ms 카운트다운 시작`);
+  const durationMs = payload?.durationMs ?? 0;
+  const isSuddenDeath = Boolean(payload?.suddenDeath);
+  log(
+    '카운트다운',
+    `${roundIndex}라운드 ${durationMs}ms 카운트다운 시작${isSuddenDeath ? ' (서든데스)' : ''}`
+  );
 });
 
 PubSub.on('countdown:tick', (payload) => {
@@ -1052,7 +1743,16 @@ PubSub.on('round:choices', (payload) => {
 });
 
 PubSub.on('round:panel:update', (payload) => {
-  log('패널 업데이트', `활성 ${payload?.activeCount ?? 0} / 대기 ${payload?.waitingCount ?? 0}`);
+  const label = payload?.label ?? (payload?.baseMode === 'loser' ? '패자 뽑기' : '승자 뽑기');
+  const lockedCount = payload?.lockedCount ?? 0;
+  log(
+    '패널 업데이트',
+    `${label} - 활성 ${payload?.activeCount ?? 0} / 대기 ${payload?.waitingCount ?? 0}${
+      lockedCount ? ` / 확정 ${lockedCount}명` : ''
+    } (목표 ${
+      payload?.targetSurvivors ?? 1
+    }명${payload?.pendingSuddenDeathCount ? ` · 서든데스 후보 ${payload.pendingSuddenDeathCount}명` : ''})`
+  );
 });
 
 const moves = ['rock', 'paper', 'scissors'];
@@ -1187,88 +1887,224 @@ const SimulationEngine = (() => {
   const state = {
     dwellPayload: null,
   };
+  const SUDDEN_DEATH_NOTICE_MS = 3000;
 
   const runRound = (roundIndex) => {
-    const participants = GameState.serialize().activeParticipants;
-    if (participants.length <= 1) {
-      SimulationEngine.finish(participants[0]);
+    const snapshot = GameState.serialize();
+    const participants = snapshot.activeParticipants;
+    const target = snapshot.targetSurvivors ?? 1;
+    const lockedIds = GameState.getSuddenDeathLocked();
+    const lockedCount = lockedIds.length;
+    const remainingSlots = Math.max(target - lockedCount, 0);
+
+    if (remainingSlots <= 0) {
+      const lockedParticipants = GameState.resolveParticipantsByIds(lockedIds);
+      if (lockedParticipants.length) {
+        SimulationEngine.finish(lockedParticipants);
+      } else {
+        SimulationEngine.finish(participants);
+      }
       return;
     }
 
-    const duration = CountdownController.start(roundIndex);
+    if (participants.length <= target) {
+      const pendingSuddenDeath = GameState.getPendingSuddenDeathParticipants();
+      if (!pendingSuddenDeath.length && participants.length <= remainingSlots) {
+        const lockedParticipants = GameState.resolveParticipantsByIds(lockedIds);
+        const finalists = lockedParticipants.length ? [...lockedParticipants, ...participants] : participants;
+        SimulationEngine.finish(finalists);
+        return;
+      }
+    }
+
+    const suddenDeathStatus = GameState.getSuddenDeathStatus();
+    const pendingSuddenDeath = GameState.getPendingSuddenDeathParticipants();
+    const isSuddenDeathRound = suddenDeathStatus === 'active' || (suddenDeathStatus === 'notifying' && pendingSuddenDeath.length > 0);
+    const duration = CountdownController.start(roundIndex, {
+      durationMs: isSuddenDeathRound ? 3000 : undefined,
+    });
+    if (isSuddenDeathRound) {
+      log('카운트다운', '서든데스 라운드 - 카운트다운을 3초로 고정합니다.');
+    }
     PubSub.emit('countdown:start', {
       roundIndex,
       durationMs: duration,
+      suddenDeath: isSuddenDeathRound,
     });
   };
 
   const handleCountdownComplete = ({ roundIndex }) => {
-    const participants = GameState.serialize().activeParticipants;
+    const snapshot = GameState.serialize();
+    const participants = snapshot.activeParticipants;
     const choices = MoveGenerator.assignChoices(participants);
     PubSub.emit('round:choices', { choices });
 
     const outcome = MoveGenerator.determineOutcome(choices);
-    const mode = GameState.serialize().mode;
+    const metadata = snapshot.modeConfig ?? getModeMetadata(snapshot.mode);
+    const evaluation = SurvivorEvaluator.evaluate({
+      participants,
+      outcome,
+      metadata,
+    });
+    const modeId = metadata?.id ?? snapshot.mode ?? 'winner';
+    const wasSuddenDeath = GameState.getSuddenDeathStatus() !== 'idle';
 
     let roundData;
-    let nextActiveIds;
     const nextRoundIndex = roundIndex + 1;
 
     if (outcome.result === 'stalemate') {
       log('라운드', '무승부가 발생했습니다. 3초 후 재도전합니다.');
       roundData = {
         index: roundIndex + 1,
-        mode,
+        mode: modeId,
         choices,
         winners: [],
         losers: [],
       };
-      nextActiveIds = participants.map((p) => p.id);
     } else {
       roundData = {
         index: roundIndex + 1,
-        mode,
+        mode: modeId,
         choices,
         winners: outcome.winners,
         losers: outcome.losers,
       };
-      nextActiveIds =
-        mode === 'winner' ? outcome.winners : outcome.losers;
     }
+    roundData.remainingCount = evaluation.survivorIds.length;
+    roundData.targetCount = metadata?.targetSurvivors ?? snapshot.targetSurvivors ?? 1;
+    const suddenDeathOutcome = SuddenDeathCoordinator.schedule({
+      survivors: evaluation.survivorIds,
+      eliminatedIds: evaluation.eliminatedIds,
+      metadata,
+      isStalemate: evaluation.isStalemate,
+      roundIndex: roundData.index,
+    });
+    roundData.suddenDeath = wasSuddenDeath;
 
     PubSub.emit('round:complete', {
       round: roundData,
-      nextActiveIds,
+      nextActiveIds:
+        Array.isArray(suddenDeathOutcome.nextActiveIds) && suddenDeathOutcome.nextActiveIds.length
+          ? suddenDeathOutcome.nextActiveIds
+          : evaluation.survivorIds,
+      eliminatedIds: evaluation.eliminatedIds,
+      suddenDeath: suddenDeathOutcome,
     });
-    state.dwellPayload = { nextRoundIndex };
+    state.dwellPayload = {
+      nextRoundIndex,
+      suddenDeath: suddenDeathOutcome.scheduled,
+      notice: suddenDeathOutcome.notice,
+      finalizeIds: suddenDeathOutcome.finalize ? suddenDeathOutcome.finalIds : null,
+    };
   };
 
   const handleDwellComplete = () => {
-    const activeCount = GameState.serialize().activeParticipants.length;
-    if (activeCount <= 1) {
-      SimulationEngine.finish(GameState.serialize().activeParticipants[0]);
+    const proceed = () => {
+      const snapshot = GameState.serialize();
+      const activeCount = snapshot.activeParticipants.length;
+      const target = snapshot.targetSurvivors ?? 1;
+
+      if (state.dwellPayload?.finalizeIds?.length) {
+        const finalists = GameState.resolveParticipantsByIds(state.dwellPayload.finalizeIds);
+        if (finalists.length) {
+          log(
+            '서든데스 종료',
+            `최종 ${finalists.length}명 확정: ${finalists.map((participant) => participant.name).join(', ')}`
+          );
+          state.dwellPayload.finalizeIds = null;
+          SimulationEngine.finish(finalists);
+          return;
+        }
+      }
+
+      if (SuddenDeathCoordinator.shouldContinue()) {
+        log(
+          '서든데스 진행',
+          `남은 ${activeCount}명, 목표 ${target}명까지 서든데스 라운드를 이어갑니다.`
+        );
+        runRound(state.dwellPayload?.nextRoundIndex ?? 0);
+        return;
+      }
+
+      const lockedIds = GameState.getSuddenDeathLocked();
+      if (lockedIds.length) {
+        const lockedParticipants = GameState.resolveParticipantsByIds(lockedIds);
+        if (lockedParticipants.length && lockedParticipants.length + activeCount === target) {
+          const finalists = [...lockedParticipants, ...snapshot.activeParticipants];
+          log(
+            '서든데스 종료',
+            `서든데스 조합 완료: ${finalists.map((participant) => participant.name).join(', ')}`
+          );
+          SimulationEngine.finish(finalists);
+          return;
+        }
+      }
+
+      if (activeCount <= target) {
+        SimulationEngine.finish(snapshot.activeParticipants);
+        return;
+      }
+
+      runRound(state.dwellPayload?.nextRoundIndex ?? 0);
+    };
+
+    if (state.dwellPayload?.notice) {
+      const snapshot = GameState.serialize();
+      const lockedIds = GameState.getSuddenDeathLocked();
+      const lockedParticipants = GameState.resolveParticipantsByIds(lockedIds);
+      const remainingSlots = Math.max((snapshot.targetSurvivors ?? 1) - lockedParticipants.length, 0);
+      render.showSuddenDeathNotice({
+        lockedParticipants,
+        remainingSlots,
+        mode: snapshot.mode,
+      });
+      window.setTimeout(() => {
+        render.hideSuddenDeathNotice();
+        SuddenDeathCoordinator.markNoticeComplete();
+        state.dwellPayload.notice = false;
+        log('서든데스 안내', '안내 팝업이 닫히고 서든데스 라운드를 시작합니다.');
+        proceed();
+      }, SUDDEN_DEATH_NOTICE_MS);
       return;
     }
-    runRound(state.dwellPayload?.nextRoundIndex ?? 0);
+
+    proceed();
   };
 
   return {
     start() {
       runRound(0);
     },
-    finish(participant) {
+    finish(finalists) {
       CountdownController.stop();
       DwellController.clear();
+      const snapshot = GameState.serialize();
+      const config = snapshot.modeConfig ?? getModeMetadata(snapshot.mode);
+      const baseMode = resolveBaseMode(config?.id);
+      const list = Array.isArray(finalists)
+        ? finalists.filter(Boolean)
+        : finalists
+        ? [finalists]
+        : [];
+
+      if (!list.length) {
+        Controls.unlock();
+        return;
+      }
+
+      const names = list.map((participant) => participant?.name ?? '알 수 없음');
+      GameState.finalize(list);
       render.showFinalPopup({
-        participantName: participant?.name ?? '알 수 없음',
-        mode: GameState.serialize().mode,
+        participantName: names[0] ?? '알 수 없음',
+        participantNames: names,
+        mode: config?.id,
       });
       log(
         '게임 종료',
-        `${GameState.serialize().mode === 'winner' ? '최종 승자' : '최종 패자'}: ${
-          participant?.name ?? '알 수 없음'
-        }`
+        `${baseMode === 'winner' ? '최종 승자' : '최종 패자'} ${names.length}명: ${names.join(', ')}`
       );
+      SuddenDeathCoordinator.complete();
+      render.hideSuddenDeathNotice();
       Controls.unlock();
     },
     handleCountdownComplete,
@@ -1282,22 +2118,27 @@ PubSub.on('countdown:complete', (payload) =>
 );
 PubSub.on('round:dwell:complete', async (payload) => {
   const context = payload ?? {};
-  const mode = context.mode ?? GameState.serialize().mode ?? 'winner';
+  const modeId = context.mode ?? GameState.serialize().mode ?? 'winner';
+  const metadata = getModeMetadata(modeId);
 
   EliminationSequenceController.buildSequence({
     round: context.round,
-    mode,
+    mode: modeId,
     eliminatedIds: context.eliminatedIds,
   });
 
   await EliminationSequenceController.execute({
     round: context.round,
-    mode,
+    mode: modeId,
     eliminatedIds: context.eliminatedIds,
   });
 
   if (Array.isArray(context.nextActiveIds)) {
-    applyNextActiveParticipants(context.nextActiveIds, mode);
+    applyNextActiveParticipants({
+      survivorIds: context.nextActiveIds,
+      eliminatedIds: Array.isArray(context.eliminatedIds) ? context.eliminatedIds : [],
+      metadata,
+    });
   }
 
   SimulationEngine.handleDwellComplete();

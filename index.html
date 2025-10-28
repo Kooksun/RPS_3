@@ -23,8 +23,22 @@
             </div>
           </div>
           <div class="control-slot" data-slot="actions">
-            <button type="button" id="start-winner" class="action-button" disabled>승자 뽑기</button>
-            <button type="button" id="start-loser" class="action-button" disabled>패자 뽑기</button>
+            <div class="mode-button-grid" role="group" aria-label="게임 모드 선택">
+              <div class="mode-button-column">
+                <p class="mode-button-heading">승자 모드</p>
+                <div class="mode-button-stack">
+                  <button type="button" id="start-winner" class="action-button" disabled>승자 뽑기</button>
+                  <button type="button" id="start-winner-dual" class="action-button" disabled>승자 2명 뽑기</button>
+                </div>
+              </div>
+              <div class="mode-button-column">
+                <p class="mode-button-heading">패자 모드</p>
+                <div class="mode-button-stack">
+                  <button type="button" id="start-loser" class="action-button" disabled>패자 뽑기</button>
+                  <button type="button" id="start-loser-dual" class="action-button" disabled>패자 2명 뽑기</button>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
 

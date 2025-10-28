@@ -4,6 +4,7 @@ Auto-generated from all feature plans. Last updated: 2025-10-24
 
 ## Active Technologies
 - In-memory state objects (`GameState`, `state.game`) (002-animate-elimination)
+- N/A (in-memory simulation) (001-add-dual-selection)
 
 - HTML5, CSS3, JavaScript (ES6+) + None (vanilla browser APIs only) (main)
 
@@ -25,6 +26,7 @@ Manual validation only: open `index.html` in Chrome and Firefox, execute quickst
 HTML5, CSS3, JavaScript (ES6+): Follow standard conventions
 
 ## Recent Changes
+- 001-add-dual-selection: Added HTML5, CSS3, JavaScript (ES6+) + None (vanilla browser APIs only)
 - 002-animate-elimination: Added HTML5, CSS3, JavaScript (ES6+) + None (vanilla browser APIs only)
 
 - main: Added HTML5, CSS3, JavaScript (ES6+) + None (vanilla browser APIs only)

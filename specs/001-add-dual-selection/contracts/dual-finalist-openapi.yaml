@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Dual Finalist Tournament Control (Conceptual)
+  version: 1.0.0
+  description: >
+    Conceptual contract describing UI-triggered commands inside the static RPS simulation.
+    No network requests are emitted; these endpoints model the in-memory actions for planning
+    and validation purposes.
+paths:
+  /game/start:
+    post:
+      summary: Start a new RPS tournament in the chosen mode
+      description: Triggered when a host clicks one of the four start buttons.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - participantNames
+                - mode
+              properties:
+                participantNames:
+                  type: array
+                  minItems: 2
+                  maxItems: 12
+                  items:
+                    type: string
+                    description: Trimmed display name as entered by the host.
+                mode:
+                  type: string
+                  enum: [winner, loser, winner-dual, loser-dual]
+                  description: Selected start button.
+      responses:
+        '200':
+          description: Tournament initialized in memory and first countdown scheduled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activeParticipants:
+                    type: array
+                    items:
+                      type: string
+                  waitingParticipants:
+                    type: array
+                    items:
+                      type: string
+                  targetSurvivors:
+                    type: integer
+                    enum: [1, 2]
+  /game/restart:
+    post:
+      summary: Reset tournament state and UI
+      description: Mirrors clicking the restart control after a session ends.
+      responses:
+        '204':
+          description: All state cleared; inputs re-enabled.
+components:
+  schemas: {}

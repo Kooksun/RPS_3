@@ -11,5 +11,14 @@ Thumbs.db
 *.tmp
 *.swp
 
+# Web app build artifacts
+node_modules/
+dist/
+build/
+coverage/
+
+# Environment files
+.env*
+
 # Local scratch space
 temp/
