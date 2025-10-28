@@ -1163,7 +1163,13 @@ const CountdownOverlayController = {
 
       wrapper.appendChild(innerNode);
       container.appendChild(wrapper);
-      requestAnimationFrame(() => innerNode.classList.add('is-visible'));
+
+      const delay = Math.random() * 200;
+      setTimeout(() => {
+        requestAnimationFrame(() => {
+          innerNode.classList.add('is-visible');
+        });
+      }, delay);
     });
   },
 };
