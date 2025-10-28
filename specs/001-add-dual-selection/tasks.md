@@ -88,7 +88,7 @@
 
 **Goal**: Keep button states, logs, and history context consistent when switching among all four modes.
 
-**Independent Test**: In a single session, run each mode in succession (`승자`, `승자 2명`, `패자`, `패자 2명`) and ensure UI resets correctly while Korean console logs reflect the active mode and survivor counts.
+**Independent Test**: In a single 세션, 네 가지 모드를 순차 실행 (`승자` → `승자 2명` → `패자` → `패자 2명`) 하면서 서든데스 안내 팝업, 3초 카운트다운, 테마 전환, 히스토리 강조, 버튼 강조가 각각 기대대로 동작하고 종료 팝업이 두 명을 노출하는지 확인한다.
 
 ### Manual Validation
 
@@ -96,10 +96,10 @@
 
 ### Implementation
 
-- [X] T017 [US3] Reset button enable/disable states and clear survivors when changing modes or restarting in `app.js`
-- [X] T018 [P] [US3] Emit Korean console messages for mode selection, per-round survivor counts, and sudden-death retries in `app.js`
-- [X] T019 [US3] Update history card rendering to show remaining vs target counts for dual modes in `app.js`
-- [X] T020 [P] [US3] Apply visual state cues (active/disabled) for all mode buttons to prevent confusion in `styles.css`
+- [X] T017 [US3] Implement sudden-death pipeline in `app.js`: end dual rounds immediately when 두 명이 동시에 확정되고, 단일 확정자는 “승자/패자: {이름}” 으로 표시하며 3초 안내 팝업 후 잔여 참가자만으로 서든데스를 자동 이어간다.
+- [X] T018 [P] [US3] Lock sudden-death 카운트다운을 3초로 고정하고 안내 팝업 종료 후 즉시 재생되는 자동 라운드/로그 흐름을 보강한다 in `app.js`
+- [X] T019 [US3] Tag history entries with sudden-death metadata and apply 붉은 테두리 등 전용 스타일 플래그를 주입한다 in `app.js`
+- [X] T020 [P] [US3] Apply sudden-death theming, notice dialog 레이아웃, locked finalist 라벨(“승자/패자: …”) 스타일을 `styles.css`와 관련 마크업에 반영한다
 
 **Checkpoint**: All modes remain comprehensible when mixed within the same session.
 
@@ -139,5 +139,5 @@
 
 1. **Deliver MVP (US1)**: Prioritize completing Phase 1, Phase 2, and Phase 3 to demo the dual-winner mode quickly.  
 2. **Add Loser Dual Mode (US2)**: Reuse the shared helpers to minimize incremental risk while introducing opposing elimination rules.  
-3. **Reinforce Clarity (US3)**: Finish by hardening state resets, logging, and history cues so operators can confidently mix modes.  
+3. **Reinforce Clarity (US3)**: Layer in sudden-death state management (단일 확정자 라벨링, 3초 안내 팝업, 고정 3초 카운트다운, 붉은 테마/히스토리 강조) so mixed-mode sessions stay understandable.  
 4. **Polish**: Close with documentation updates, regression notes, and minor refactors to keep the static bundle maintainable.

@@ -44,6 +44,28 @@ body {
   padding: 24px;
 }
 
+body.is-sudden-death {
+  background: radial-gradient(circle at center, #3b0d0c 0%, #0f172a 65%, #020617 100%);
+}
+
+.is-sudden-death .layout-header,
+.is-sudden-death .layout-main,
+.is-sudden-death .history-panel .panel-content {
+  background: rgba(63, 15, 24, 0.7);
+  border-color: rgba(252, 165, 165, 0.4);
+}
+
+.mode-button-grid.is-sudden-death .action-button {
+  background: rgba(220, 38, 38, 0.15);
+  border-color: rgba(252, 165, 165, 0.35);
+}
+
+.mode-button-grid.is-sudden-death .action-button.is-active {
+  background: rgba(248, 113, 113, 0.45);
+  border-color: rgba(248, 113, 113, 0.8);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.6);
+}
+
 .layout-root {
 
   width: min(1200px, 100%);
@@ -52,7 +74,7 @@ body {
 
   display: grid;
 
-  grid-template-columns: 5fr 1fr;
+  grid-template-columns: 4fr 1.2fr;
 
   grid-template-rows: 1fr;
 
@@ -220,6 +242,47 @@ body {
   transform: translateY(-1px);
 }
 
+#sudden-death-notice {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(12px);
+  z-index: 1200;
+  transition: opacity var(--transition-medium);
+}
+
+#sudden-death-notice[hidden] {
+  display: none !important;
+}
+
+.sudden-death-notice__card {
+  width: min(420px, 90vw);
+  padding: 28px 32px;
+  border-radius: var(--border-radius-lg);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.35), rgba(14, 165, 233, 0.35));
+  border: 1px solid rgba(148, 197, 255, 0.5);
+  box-shadow: 0 24px 48px rgba(2, 6, 23, 0.6);
+  text-align: center;
+  color: var(--color-text);
+}
+
+.sudden-death-notice__title {
+  margin: 0 0 8px;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sudden-death-notice__message {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--color-subtle);
+}
+
 .layout-main {
   display: flex;
   flex-direction: column;
@@ -251,6 +314,10 @@ body {
   justify-content: center;
 }
 
+.is-sudden-death .arena-circle {
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
 
 
 #countdown-indicator {
@@ -269,6 +336,11 @@ body {
 
 #countdown-indicator.is-visible {
   opacity: 1;
+}
+
+.is-sudden-death #countdown-indicator {
+  color: #fca5a5;
+  text-shadow: 0 4px 18px rgba(248, 113, 113, 0.45);
 }
 
 .countdown-overlay--visible {
@@ -523,14 +595,30 @@ body {
   background: rgba(15, 23, 42, 0.5);
   border-top: 1px solid rgba(148, 163, 184, 0.3);
   border-radius: 0 0 var(--border-radius-sm) var(--border-radius-sm);
-  text-align: center;
   color: var(--color-subtle);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: center;
+  gap: 4px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.panel-line {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.panel-line--locked {
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.waiting-panel .placeholder {
+  margin: 0;
+  width: 100%;
+  text-align: center;
 }
 
 .history-panel {
@@ -550,20 +638,36 @@ body {
   animation: fade-in var(--transition-fast);
 }
 
+.history-card--sudden-death {
+  border-color: rgba(248, 113, 113, 0.75);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.5);
+  background: rgba(63, 15, 24, 0.65);
+}
+
 .history-card__header {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  font-size: 0.9rem;
-  color: var(--color-subtle);
+  gap: 4px;
   margin-bottom: 6px;
 }
 
-.history-card__header .probability {
+.history-card__meta {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  color: var(--color-subtle);
+}
+
+.history-card__round {
+  font-weight: 600;
+}
+
+.history-card__probability {
   color: #fbbf24;
   font-weight: 600;
-  align-self: flex-end;
 }
 
 .history-card__header .survivor-meta {

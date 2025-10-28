@@ -7,7 +7,7 @@
 
 ## Summary
 
-Extend the existing automatic RPS tournament so hosts can choose new `승자 2명 뽑기` and `패자 2명 뽑기` start options that end the game when exactly two finalists remain. The change keeps current in-browser state management, adds UI controls for the dual-finalist modes, and updates round processing to monitor survivor counts, including sudden-death tiebreakers when more than two entrants would remain.
+Extend the existing automatic RPS tournament so hosts can choose new `승자 2명 뽑기` and `패자 2명 뽑기` start options that only finish once 두 명이 확정된다. Dual-mode rounds now end immediately when 두 명이 한 번에 결정되고, 단일 참가자만 확정될 경우에는 “승자/패자: {이름}”으로 고정 표시한 뒤 3초 안내 팝업을 거쳐 서든데스(3초 고정 카운트다운, 전용 테마, 붉은 테두리 히스토리)로 진입한다. Sudden-death runs reuse the locked finalist from 일반 라운드, continue with the remaining 참가자만 자동으로 돌리고, 두 명이 완성되면 팝업과 콘솔에 같은 순서로 보고한다.
 
 ## Technical Context
 
