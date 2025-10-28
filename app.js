@@ -6,6 +6,37 @@ const INPUT_LIMITS = {
   max: 12,
 };
 
+const MODE_METADATA = Object.freeze({
+  winner: {
+    id: 'winner',
+    label: '승자 뽑기',
+    targetSurvivors: 1,
+    exclusionRule: 'drop-losers',
+  },
+  loser: {
+    id: 'loser',
+    label: '패자 뽑기',
+    targetSurvivors: 1,
+    exclusionRule: 'drop-winners',
+  },
+  'winner-dual': {
+    id: 'winner-dual',
+    label: '승자 2명 뽑기',
+    targetSurvivors: 2,
+    exclusionRule: 'drop-losers',
+  },
+  'loser-dual': {
+    id: 'loser-dual',
+    label: '패자 2명 뽑기',
+    targetSurvivors: 2,
+    exclusionRule: 'drop-winners',
+  },
+});
+
+const getModeMetadata = (modeKey) => MODE_METADATA[modeKey] ?? MODE_METADATA.winner;
+const resolveBaseMode = (modeId) =>
+  String(modeId ?? 'winner').startsWith('loser') ? 'loser' : 'winner';
+
 const log = (scope, message, payload) => {
   const timestamp = new Date().toLocaleTimeString('ko-KR', {
     hour12: false,
@@ -23,6 +54,8 @@ const log = (scope, message, payload) => {
 const state = {
   game: {
     mode: null,
+    modeLabel: '',
+    modeConfig: MODE_METADATA.winner,
     activeParticipants: [],
     waitingParticipants: [],
     history: [],
@@ -31,6 +64,9 @@ const state = {
       isRunning: false,
       currentRound: 0,
     },
+    targetSurvivors: MODE_METADATA.winner.targetSurvivors,
+    exclusionRule: MODE_METADATA.winner.exclusionRule,
+    pendingSuddenDeath: null,
     finalParticipant: null,
     nameRadius: 0,
   },
@@ -55,6 +91,8 @@ const state = {
 const GameState = {
   reset() {
     state.game.mode = null;
+    state.game.modeLabel = '';
+    state.game.modeConfig = MODE_METADATA.winner;
     state.game.activeParticipants = [];
     state.game.waitingParticipants = [];
     state.game.history = [];
@@ -63,11 +101,20 @@ const GameState = {
       isRunning: false,
       currentRound: 0,
     };
+    state.game.targetSurvivors = MODE_METADATA.winner.targetSurvivors;
+    state.game.exclusionRule = MODE_METADATA.winner.exclusionRule;
+    state.game.pendingSuddenDeath = null;
     state.game.finalParticipant = null;
   },
 
   setMode(mode) {
-    state.game.mode = mode;
+    const metadata = getModeMetadata(mode);
+    state.game.mode = metadata.id;
+    state.game.modeLabel = metadata.label;
+    state.game.modeConfig = metadata;
+    state.game.targetSurvivors = metadata.targetSurvivors;
+    state.game.exclusionRule = metadata.exclusionRule;
+    state.game.pendingSuddenDeath = null;
   },
 
   setActiveParticipants(participants) {
@@ -91,14 +138,123 @@ const GameState = {
   finalize(participant) {
     state.game.finalParticipant = participant;
     state.game.countdown.isRunning = false;
+    state.game.pendingSuddenDeath = null;
   },
 
   setNameRadius(radius) {
     state.game.nameRadius = radius;
   },
 
+  setPendingSuddenDeath(participantIds) {
+    if (Array.isArray(participantIds) && participantIds.length) {
+      const unique = [...new Set(participantIds)];
+      state.game.pendingSuddenDeath = unique;
+    } else {
+      state.game.pendingSuddenDeath = null;
+    }
+  },
+
+  getPendingSuddenDeath() {
+    return state.game.pendingSuddenDeath;
+  },
+
+  getModeConfig() {
+    return state.game.modeConfig ?? MODE_METADATA.winner;
+  },
+
+  getTargetSurvivors() {
+    return state.game.targetSurvivors ?? MODE_METADATA.winner.targetSurvivors;
+  },
+
   serialize() {
     return structuredClone(state.game);
+  },
+};
+
+const SurvivorEvaluator = {
+  evaluate({ participants = [], outcome, metadata }) {
+    const participantIds = participants.map((participant) => participant.id);
+    if (!outcome || outcome.result === 'stalemate') {
+      return {
+        survivorIds: participantIds,
+        eliminatedIds: [],
+        isStalemate: true,
+      };
+    }
+
+    const dropWinners = metadata?.exclusionRule === 'drop-winners';
+    const rawSurvivors = dropWinners ? outcome.losers : outcome.winners;
+    const rawEliminated = dropWinners ? outcome.winners : outcome.losers;
+
+    const survivorIds =
+      Array.isArray(rawSurvivors) && rawSurvivors.length
+        ? [...new Set(rawSurvivors)]
+        : participantIds;
+    const eliminatedIds =
+      Array.isArray(rawEliminated) && rawEliminated.length
+        ? [...new Set(rawEliminated)]
+        : [];
+
+    return {
+      survivorIds,
+      eliminatedIds,
+      isStalemate: false,
+    };
+  },
+
+  buildParticipantPools({ survivorIds = [], previousActive = [], previousWaiting = [] }) {
+    const pool = new Map(
+      [...previousActive, ...previousWaiting].map((participant) => [participant.id, { ...participant }])
+    );
+
+    const survivors = survivorIds
+      .map((id) => pool.get(id))
+      .filter(Boolean)
+      .map((participant) => ({ ...participant, status: 'active' }));
+
+    const survivorSet = new Set(survivors.map((participant) => participant.id));
+    const newlyWaiting = previousActive
+      .filter((participant) => !survivorSet.has(participant.id))
+      .map((participant) => ({ ...participant, status: 'waiting' }));
+    const retainedWaiting = previousWaiting
+      .filter((participant) => !survivorSet.has(participant.id))
+      .map((participant) => ({ ...participant, status: 'waiting' }));
+
+    return {
+      survivors,
+      waiting: [...newlyWaiting, ...retainedWaiting],
+    };
+  },
+};
+
+const SuddenDeathCoordinator = {
+  schedule({ survivors = [], metadata, isStalemate = false, roundIndex }) {
+    const config = metadata ?? GameState.getModeConfig();
+    const target = config?.targetSurvivors ?? 1;
+
+    if (isStalemate || target <= 1 || !Array.isArray(survivors)) {
+      GameState.setPendingSuddenDeath(null);
+      return false;
+    }
+
+    if (survivors.length > target) {
+      GameState.setPendingSuddenDeath(survivors);
+      log(
+        '서든데스 예약',
+        `라운드 ${roundIndex} 결과 현재 ${survivors.length}명 → 목표 ${target}명, 서든데스 재경기를 예약합니다.`
+      );
+      return true;
+    }
+
+    GameState.setPendingSuddenDeath(null);
+    return false;
+  },
+
+  shouldContinue() {
+    const snapshot = GameState.serialize();
+    const pending = snapshot.pendingSuddenDeath;
+    const target = snapshot.targetSurvivors ?? 1;
+    return target > 1 && Array.isArray(pending) && pending.length && snapshot.activeParticipants.length > target;
   },
 };
 
@@ -159,8 +315,9 @@ const HistoryRenderer = {
   },
   createCard(round) {
     const card = document.createElement('article');
-    const mode = round.mode || state.game.mode || 'winner';
-    card.className = `history-card history-card--${mode === 'winner' ? 'winner' : 'loser'}`;
+    const modeId = round.mode || state.game.mode || 'winner';
+    const baseMode = resolveBaseMode(modeId);
+    card.className = `history-card history-card--${baseMode === 'winner' ? 'winner' : 'loser'}`;
 
     const header = document.createElement('div');
     header.className = 'history-card__header';
@@ -173,13 +330,25 @@ const HistoryRenderer = {
     });
     const probPercent = (prob * 100).toFixed(1);
 
-    header.innerHTML = `<span>라운드 ${round.index ?? '?'}</span><span class="probability">${probPercent}%</span>`;
+    const survivorLabel = baseMode === 'winner' ? '남은 우승 후보' : '남은 패자 후보';
+    const countLine =
+      typeof round.remainingCount === 'number'
+        ? `${survivorLabel} ${round.remainingCount}명 · 목표 ${round.targetCount ?? '?'}명`
+        : '';
+
+    header.innerHTML = `
+      <span>라운드 ${round.index ?? '?'}</span>
+      <span class="probability">${probPercent}%</span>
+      ${countLine ? `<span class="survivor-meta">${countLine}</span>` : ''}
+    `;
 
     const body = document.createElement('div');
     body.className = 'history-card__body';
 
     const isStalemate = (round.winners ?? []).length === 0 && (round.losers ?? []).length === 0;
-    const eliminatedIds = new Set(mode === 'winner' ? round.losers : round.winners);
+    const eliminatedIds = new Set(
+      baseMode === 'winner' ? round.losers : round.winners
+    );
 
     (round.choices ?? []).forEach((choice) => {
       const row = document.createElement('div');
@@ -190,7 +359,7 @@ const HistoryRenderer = {
       let nameHtml;
       if (isStalemate) {
         nameHtml = `😐 ${name}`;
-      } else if (mode === 'winner') {
+      } else if (baseMode === 'winner') {
         nameHtml = isEliminated ? `💀 ${name}` : `😊 ${name}`;
       } else { // loser mode
         nameHtml = isEliminated ? `😊 ${name}` : `💀 ${name}`;
@@ -312,11 +481,18 @@ const render = {
   hideCountdown() {
     render.updateCountdown('');
   },
-  showFinalPopup({ participantName, mode }) {
+  showFinalPopup({ participantName, participantNames, mode }) {
     if (!state.dom.finalPopup) return;
+    const baseMode = resolveBaseMode(mode);
     state.dom.finalPopupMode.textContent =
-      mode === 'winner' ? '최종 승자' : '최종 패자';
-    state.dom.finalPopupName.textContent = participantName ?? '-';
+      baseMode === 'winner' ? '최종 승자' : '최종 패자';
+    const names =
+      Array.isArray(participantNames) && participantNames.length
+        ? participantNames
+        : participantName
+        ? [participantName]
+        : [];
+    state.dom.finalPopupName.textContent = names.length ? names.join(', ') : '-';
     state.dom.finalPopup.hidden = false;
     const previouslyFocused = document.activeElement;
     state.dom.finalPopup.dataset.previousFocus =
@@ -448,25 +624,62 @@ const Controls = (() => {
   const refs = {
     input: null,
     winnerBtn: null,
+    winnerDualBtn: null,
     loserBtn: null,
+    loserDualBtn: null,
   };
 
   const stateCache = {
     parsed: InputParser.parse(''),
   };
   let lastButtonsEnabled = false;
+  let lastActiveMode = null;
+
+  const setActiveModeButton = (modeId) => {
+    const resolved = modeId ?? null;
+    const target =
+      resolved === 'winner'
+        ? refs.winnerBtn
+        : resolved === 'winner-dual'
+        ? refs.winnerDualBtn
+        : resolved === 'loser'
+        ? refs.loserBtn
+        : resolved === 'loser-dual'
+        ? refs.loserDualBtn
+        : null;
+    if (lastActiveMode !== resolved) {
+      if (resolved) {
+        const metadata = getModeMetadata(resolved);
+        log('모드 표시', `${metadata.label} 버튼을 강조합니다.`);
+      } else if (lastActiveMode) {
+        log('모드 표시', '모드 강조를 초기화합니다.');
+      }
+      lastActiveMode = resolved;
+    }
+    [refs.winnerBtn, refs.winnerDualBtn, refs.loserBtn, refs.loserDualBtn].forEach((btn) => {
+      if (!btn) return;
+      const isActive = btn === target;
+      btn.classList.toggle('is-active', isActive);
+      if (isActive) {
+        btn.setAttribute('aria-pressed', 'true');
+      } else {
+        btn.setAttribute('aria-pressed', 'false');
+      }
+    });
+  };
 
   const handleInput = () => {
     if (!refs.input) return;
     stateCache.parsed = InputParser.parse(refs.input.value);
     GameState.setActiveParticipants(stateCache.parsed.participants);
     Controls.updateButtons(stateCache.parsed.isCountValid);
+    setActiveModeButton(null);
     render.refreshParticipants(stateCache.parsed.participants);
     log('참가자', `현재 ${stateCache.parsed.count}명 입력됨`);
     PubSub.emit('participants:update', { ...stateCache.parsed });
   };
 
-const handleStart = (mode) => {
+  const handleStart = (mode) => {
     if (!refs.input) return;
     const { participants, isCountValid, warnings } = InputParser.parse(refs.input.value);
     if (!isCountValid) {
@@ -477,11 +690,16 @@ const handleStart = (mode) => {
       log('시작 불가', message);
       return;
     }
+    const metadata = getModeMetadata(mode);
     GameState.reset();
     GameState.setMode(mode);
     GameState.setActiveParticipants(participants);
     Controls.lock();
-    log('게임 시작', `${mode === 'winner' ? '승자' : '패자'} 모드로 시작합니다.`);
+    setActiveModeButton(GameState.serialize().mode);
+    log(
+      '게임 시작',
+      `${metadata.label} 모드로 시작합니다. 목표 생존자 ${metadata.targetSurvivors}명`
+    );
     CountdownOverlayController.showIntro();
     PubSub.emit('game:start', {
       mode,
@@ -493,7 +711,9 @@ const handleStart = (mode) => {
     attach() {
       refs.input = document.getElementById('participants-input');
       refs.winnerBtn = document.getElementById('start-winner');
+      refs.winnerDualBtn = document.getElementById('start-winner-dual');
       refs.loserBtn = document.getElementById('start-loser');
+      refs.loserDualBtn = document.getElementById('start-loser-dual');
 
       if (refs.input) {
         refs.input.addEventListener('input', handleInput);
@@ -501,14 +721,21 @@ const handleStart = (mode) => {
       if (refs.winnerBtn) {
         refs.winnerBtn.addEventListener('click', () => handleStart('winner'));
       }
+      if (refs.winnerDualBtn) {
+        refs.winnerDualBtn.addEventListener('click', () => handleStart('winner-dual'));
+      }
       if (refs.loserBtn) {
         refs.loserBtn.addEventListener('click', () => handleStart('loser'));
       }
+      if (refs.loserDualBtn) {
+        refs.loserDualBtn.addEventListener('click', () => handleStart('loser-dual'));
+      }
 
       Controls.updateButtons(false);
+      setActiveModeButton(null);
     },
     updateButtons(isValid) {
-      [refs.winnerBtn, refs.loserBtn].forEach((btn) => {
+      [refs.winnerBtn, refs.winnerDualBtn, refs.loserBtn, refs.loserDualBtn].forEach((btn) => {
         if (btn) {
           btn.disabled = !isValid;
         }
@@ -531,6 +758,7 @@ const handleStart = (mode) => {
         refs.input.disabled = false;
       }
       log('입력 해제', '새로운 참가자를 입력할 수 있습니다.');
+      setActiveModeButton(null);
       handleInput();
     },
   };
@@ -670,6 +898,11 @@ const DwellController = (() => {
     start(payload) {
       DwellController.clear();
       log('대기 시간', '결과를 3초간 표시합니다.');
+      if (payload?.suddenDeath) {
+        const snapshot = GameState.serialize();
+        const target = snapshot.targetSurvivors ?? 1;
+        log('대기 시간', `서든데스 준비 중: 목표 생존자 ${target}명`);
+      }
       timerId = window.setTimeout(() => {
         timerId = null;
         log('대기 시간', '다음 라운드를 진행합니다.');
@@ -737,11 +970,12 @@ const EliminationSequenceController = (() => {
     return Math.min(MAX_DURATION, Math.max(MIN_DURATION, value));
   };
 
-  const resolveMode = (contextMode) => contextMode ?? GameState.serialize().mode ?? 'winner';
+  const resolveModeId = (contextMode) => contextMode ?? GameState.serialize().mode ?? 'winner';
 
   const resolveEliminatedIds = (round, mode) => {
     if (!round) return [];
-    if (mode === 'winner') return Array.isArray(round.losers) ? [...round.losers] : [];
+    const baseMode = resolveBaseMode(mode);
+    if (baseMode === 'winner') return Array.isArray(round.losers) ? [...round.losers] : [];
     return Array.isArray(round.winners) ? [...round.winners] : [];
   };
 
@@ -819,7 +1053,7 @@ const EliminationSequenceController = (() => {
         cleanup();
       };
 
-      const triumphantExit = sequence.mode === 'loser';
+      const triumphantExit = resolveBaseMode(sequence.mode) === 'loser';
       const runtime = Math.min(
         triumphantExit ? sequence.durationMs + 180 : sequence.durationMs,
         MAX_DURATION
@@ -835,7 +1069,7 @@ const EliminationSequenceController = (() => {
 
       window.requestAnimationFrame(() => {
         target.classList.add('is-eliminating');
-        if (sequence.mode === 'winner') {
+        if (resolveBaseMode(sequence.mode) === 'winner') {
           target.classList.add('is-eliminating--loser');
         } else {
           target.classList.add('is-eliminating--winner');
@@ -855,10 +1089,11 @@ const EliminationSequenceController = (() => {
 
   const buildSequence = (context = {}) => {
     const round = context.round ?? null;
-    const mode = resolveMode(context.mode);
+    const mode = resolveModeId(context.mode);
+    const baseMode = resolveBaseMode(mode);
     const eliminatedIds = Array.isArray(context.eliminatedIds)
       ? [...context.eliminatedIds]
-      : resolveEliminatedIds(round, mode);
+      : resolveEliminatedIds(round, baseMode);
     const durationMs = clampDuration(context.durationMs ?? DEFAULT_DURATION);
 
     pendingSequence = {
@@ -930,7 +1165,7 @@ const EliminationSequenceController = (() => {
     }
 
     emitWithStatus('round:elimination:start', sequence);
-    const roleLabel = sequence.mode === 'winner' ? '패배자' : '승자';
+    const roleLabel = resolveBaseMode(sequence.mode) === 'winner' ? '패배자' : '승자';
     log(
       '탈락 애니메이션',
       `${roleLabel} ${participantNames.length}명 애니메이션 시작: ${participantNames.join(', ')}`
@@ -978,35 +1213,68 @@ const EliminationSequenceController = (() => {
   };
 })();
 
-const applyNextActiveParticipants = (nextActiveIds = [], mode) => {
-  const prevActive = state.game.activeParticipants;
-  const prevWaiting = state.game.waitingParticipants;
-  const pool = new Map([...prevActive, ...prevWaiting].map((participant) => [participant.id, { ...participant }]));
+const applyNextActiveParticipants = ({
+  survivorIds = [],
+  eliminatedIds = [],
+  metadata,
+} = {}) => {
+  const snapshot = GameState.serialize();
+  const { survivors, waiting } = SurvivorEvaluator.buildParticipantPools({
+    survivorIds,
+    previousActive: snapshot.activeParticipants,
+    previousWaiting: snapshot.waitingParticipants,
+  });
 
-  const newActive = nextActiveIds
-    .map((id) => pool.get(id))
-    .filter(Boolean)
-    .map((participant) => ({ ...participant, status: 'active' }));
+  GameState.setActiveParticipants(survivors);
+  GameState.setWaitingParticipants(waiting);
+  render.refreshParticipants(survivors);
+  WaitingPanelRenderer.render(waiting);
 
-  const newActiveSet = new Set(nextActiveIds);
-  const newlyWaiting = prevActive
-    .filter((participant) => !newActiveSet.has(participant.id))
-    .map((participant) => ({ ...participant, status: 'waiting' }));
-  const waitingKeep = prevWaiting
-    .filter((participant) => !newActiveSet.has(participant.id))
-    .map((participant) => ({ ...participant, status: 'waiting' }));
-  const waitingList = [...newlyWaiting, ...waitingKeep];
-
-  GameState.setActiveParticipants(newActive);
-  GameState.setWaitingParticipants(waitingList);
-  render.refreshParticipants(newActive);
-  WaitingPanelRenderer.render(waitingList);
+  const config = metadata ?? GameState.getModeConfig();
+  const modeId = config?.id ?? snapshot.mode ?? 'winner';
+  const baseMode = resolveBaseMode(modeId);
+  const label = config?.label ?? (baseMode === 'winner' ? '승자 뽑기' : '패자 뽑기');
   const summary = {
-    activeCount: newActive.length,
-    waitingCount: waitingList.length,
-    mode,
+    mode: modeId,
+    baseMode,
+    label,
+    activeCount: survivors.length,
+    waitingCount: waiting.length,
+    targetSurvivors: config?.targetSurvivors ?? GameState.getTargetSurvivors(),
+    pendingSuddenDeathCount: Array.isArray(GameState.getPendingSuddenDeath())
+      ? GameState.getPendingSuddenDeath().length
+      : 0,
   };
-  log('패널 상태', `활성 ${summary.activeCount}명 / 대기 ${summary.waitingCount}명 (${mode})`);
+
+  if (eliminatedIds.length) {
+    const nameMap = new Map(
+      [...snapshot.activeParticipants, ...snapshot.waitingParticipants].map((participant) => [
+        participant.id,
+        participant.name,
+      ])
+    );
+    const names = eliminatedIds
+      .map((id) => nameMap.get(id) ?? id)
+      .filter(Boolean)
+      .join(', ');
+    if (names) {
+      log(
+        '라운드 결과',
+        `${label} 모드 제외 대상: ${names}`
+      );
+    }
+  }
+
+  log(
+    '패널 상태',
+    `${label} - 활성 ${summary.activeCount}명 / 대기 ${summary.waitingCount}명 (목표 ${summary.targetSurvivors}명)`
+  );
+  if (summary.pendingSuddenDeathCount > 0) {
+    log(
+      '서든데스 대기',
+      `${label} 모드 서든데스 후보 ${summary.pendingSuddenDeathCount}명`
+    );
+  }
   PubSub.emit('round:panel:update', summary);
 };
 
@@ -1019,12 +1287,18 @@ PubSub.on('game:start', () => {
 
 PubSub.on('round:complete', (payload) => {
   if (!payload) return;
-  const { round, nextActiveIds = [] } = payload;
+  const { round, nextActiveIds = [], eliminatedIds = [] } = payload;
   if (round) {
     HistoryRenderer.append(round);
   }
   const mode = round?.mode || state.game.mode;
-  DwellController.start({ round, nextActiveIds, mode });
+  DwellController.start({
+    round,
+    nextActiveIds,
+    eliminatedIds,
+    mode,
+    suddenDeath: Boolean(round?.suddenDeath),
+  });
 });
 
 PubSub.on('countdown:start', (payload) => {
@@ -1052,7 +1326,13 @@ PubSub.on('round:choices', (payload) => {
 });
 
 PubSub.on('round:panel:update', (payload) => {
-  log('패널 업데이트', `활성 ${payload?.activeCount ?? 0} / 대기 ${payload?.waitingCount ?? 0}`);
+  const label = payload?.label ?? (payload?.baseMode === 'loser' ? '패자 뽑기' : '승자 뽑기');
+  log(
+    '패널 업데이트',
+    `${label} - 활성 ${payload?.activeCount ?? 0} / 대기 ${payload?.waitingCount ?? 0} (목표 ${
+      payload?.targetSurvivors ?? 1
+    }명${payload?.pendingSuddenDeathCount ? ` · 서든데스 후보 ${payload.pendingSuddenDeathCount}명` : ''})`
+  );
 });
 
 const moves = ['rock', 'paper', 'scissors'];
@@ -1189,9 +1469,11 @@ const SimulationEngine = (() => {
   };
 
   const runRound = (roundIndex) => {
-    const participants = GameState.serialize().activeParticipants;
-    if (participants.length <= 1) {
-      SimulationEngine.finish(participants[0]);
+    const snapshot = GameState.serialize();
+    const participants = snapshot.activeParticipants;
+    const target = snapshot.targetSurvivors ?? 1;
+    if (participants.length <= target) {
+      SimulationEngine.finish(participants);
       return;
     }
 
@@ -1203,52 +1485,78 @@ const SimulationEngine = (() => {
   };
 
   const handleCountdownComplete = ({ roundIndex }) => {
-    const participants = GameState.serialize().activeParticipants;
+    const snapshot = GameState.serialize();
+    const participants = snapshot.activeParticipants;
     const choices = MoveGenerator.assignChoices(participants);
     PubSub.emit('round:choices', { choices });
 
     const outcome = MoveGenerator.determineOutcome(choices);
-    const mode = GameState.serialize().mode;
+    const metadata = snapshot.modeConfig ?? getModeMetadata(snapshot.mode);
+    const evaluation = SurvivorEvaluator.evaluate({
+      participants,
+      outcome,
+      metadata,
+    });
+    const modeId = metadata?.id ?? snapshot.mode ?? 'winner';
 
     let roundData;
-    let nextActiveIds;
     const nextRoundIndex = roundIndex + 1;
 
     if (outcome.result === 'stalemate') {
       log('라운드', '무승부가 발생했습니다. 3초 후 재도전합니다.');
       roundData = {
         index: roundIndex + 1,
-        mode,
+        mode: modeId,
         choices,
         winners: [],
         losers: [],
       };
-      nextActiveIds = participants.map((p) => p.id);
     } else {
       roundData = {
         index: roundIndex + 1,
-        mode,
+        mode: modeId,
         choices,
         winners: outcome.winners,
         losers: outcome.losers,
       };
-      nextActiveIds =
-        mode === 'winner' ? outcome.winners : outcome.losers;
     }
+    roundData.remainingCount = evaluation.survivorIds.length;
+    roundData.targetCount = metadata?.targetSurvivors ?? snapshot.targetSurvivors ?? 1;
+    const suddenDeathScheduled = SuddenDeathCoordinator.schedule({
+      survivors: evaluation.survivorIds,
+      metadata,
+      isStalemate: evaluation.isStalemate,
+      roundIndex: roundData.index,
+    });
+    roundData.suddenDeath = suddenDeathScheduled;
 
     PubSub.emit('round:complete', {
       round: roundData,
-      nextActiveIds,
+      nextActiveIds: evaluation.survivorIds,
+      eliminatedIds: evaluation.eliminatedIds,
     });
-    state.dwellPayload = { nextRoundIndex };
+    state.dwellPayload = { nextRoundIndex, suddenDeath: suddenDeathScheduled };
   };
 
   const handleDwellComplete = () => {
-    const activeCount = GameState.serialize().activeParticipants.length;
-    if (activeCount <= 1) {
-      SimulationEngine.finish(GameState.serialize().activeParticipants[0]);
+    const snapshot = GameState.serialize();
+    const activeCount = snapshot.activeParticipants.length;
+    const target = snapshot.targetSurvivors ?? 1;
+
+    if (SuddenDeathCoordinator.shouldContinue()) {
+      log(
+        '서든데스 진행',
+        `남은 ${activeCount}명, 목표 ${target}명까지 서든데스 라운드를 이어갑니다.`
+      );
+      runRound(state.dwellPayload?.nextRoundIndex ?? 0);
       return;
     }
+
+    if (activeCount <= target) {
+      SimulationEngine.finish(snapshot.activeParticipants);
+      return;
+    }
+
     runRound(state.dwellPayload?.nextRoundIndex ?? 0);
   };
 
@@ -1256,18 +1564,33 @@ const SimulationEngine = (() => {
     start() {
       runRound(0);
     },
-    finish(participant) {
+    finish(finalists) {
       CountdownController.stop();
       DwellController.clear();
+      const snapshot = GameState.serialize();
+      const config = snapshot.modeConfig ?? getModeMetadata(snapshot.mode);
+      const baseMode = resolveBaseMode(config?.id);
+      const list = Array.isArray(finalists)
+        ? finalists.filter(Boolean)
+        : finalists
+        ? [finalists]
+        : [];
+
+      if (!list.length) {
+        Controls.unlock();
+        return;
+      }
+
+      const names = list.map((participant) => participant?.name ?? '알 수 없음');
+      GameState.finalize(list[0]);
       render.showFinalPopup({
-        participantName: participant?.name ?? '알 수 없음',
-        mode: GameState.serialize().mode,
+        participantName: names[0] ?? '알 수 없음',
+        participantNames: names,
+        mode: config?.id,
       });
       log(
         '게임 종료',
-        `${GameState.serialize().mode === 'winner' ? '최종 승자' : '최종 패자'}: ${
-          participant?.name ?? '알 수 없음'
-        }`
+        `${baseMode === 'winner' ? '최종 승자' : '최종 패자'} ${names.length}명: ${names.join(', ')}`
       );
       Controls.unlock();
     },
@@ -1282,22 +1605,27 @@ PubSub.on('countdown:complete', (payload) =>
 );
 PubSub.on('round:dwell:complete', async (payload) => {
   const context = payload ?? {};
-  const mode = context.mode ?? GameState.serialize().mode ?? 'winner';
+  const modeId = context.mode ?? GameState.serialize().mode ?? 'winner';
+  const metadata = getModeMetadata(modeId);
 
   EliminationSequenceController.buildSequence({
     round: context.round,
-    mode,
+    mode: modeId,
     eliminatedIds: context.eliminatedIds,
   });
 
   await EliminationSequenceController.execute({
     round: context.round,
-    mode,
+    mode: modeId,
     eliminatedIds: context.eliminatedIds,
   });
 
   if (Array.isArray(context.nextActiveIds)) {
-    applyNextActiveParticipants(context.nextActiveIds, mode);
+    applyNextActiveParticipants({
+      survivorIds: context.nextActiveIds,
+      eliminatedIds: Array.isArray(context.eliminatedIds) ? context.eliminatedIds : [],
+      metadata,
+    });
   }
 
   SimulationEngine.handleDwellComplete();

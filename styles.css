@@ -128,6 +128,40 @@ body {
   flex-wrap: wrap;
 }
 
+.mode-button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  width: 100%;
+  align-items: start;
+}
+
+.mode-button-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mode-button-heading {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(226, 232, 240, 0.75);
+  text-align: center;
+}
+
+.mode-button-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mode-button-stack .action-button {
+  width: 100%;
+  min-width: 0;
+}
+
 .field-label {
   font-size: 0.95rem;
   color: var(--color-text);
@@ -173,6 +207,12 @@ body {
 .action-button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.action-button.is-active {
+  background: rgba(16, 185, 129, 0.35);
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.35);
 }
 
 .action-button:not(:disabled):hover {
@@ -512,8 +552,9 @@ body {
 
 .history-card__header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   font-size: 0.9rem;
   color: var(--color-subtle);
   margin-bottom: 6px;
@@ -522,6 +563,12 @@ body {
 .history-card__header .probability {
   color: #fbbf24;
   font-weight: 600;
+  align-self: flex-end;
+}
+
+.history-card__header .survivor-meta {
+  font-size: 0.8rem;
+  color: rgba(226, 232, 240, 0.75);
 }
 
 .history-card__body {
@@ -669,6 +716,14 @@ body {
 
   .control-slot[data-slot="actions"] {
     justify-content: stretch;
+  }
+
+  .mode-button-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-button-heading {
+    text-align: left;
   }
 
   .action-button {
